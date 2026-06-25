@@ -152,6 +152,42 @@ export ALLOYDB_PASSWORD="${PASSWORD:-${ALLOYDB_PASSWORD:-}}"
 
 run_stage() { bash "$SCRIPTS/$1"; }
 
+# Fail fast on auth / missing project BEFORE terraform starts creating things.
+preflight() {
+  echo "== preflight: gcloud auth + project =="
+  command -v gcloud >/dev/null 2>&1 || { echo "ERROR: gcloud missing (./deploy.sh doctor)"; exit 1; }
+
+  # User credentials (used by gcloud/bq). Re-login if expired.
+  if ! gcloud auth print-access-token >/dev/null 2>&1; then
+    echo "gcloud user credentials missing/expired -> launching login..."
+    gcloud auth login || { echo "ERROR: gcloud auth login failed"; exit 1; }
+  fi
+
+  # Application Default Credentials (used by Terraform). Re-login if expired
+  # (this is the 'invalid_rapt' / reauth error mid-apply).
+  if ! gcloud auth application-default print-access-token >/dev/null 2>&1; then
+    echo "Application Default Credentials missing/expired -> launching ADC login..."
+    gcloud auth application-default login || { echo "ERROR: ADC login failed"; exit 1; }
+  fi
+
+  # Project must exist (unless Terraform is creating it).
+  if [[ "${CREATE_PROJECT}" != "true" ]]; then
+    if ! gcloud projects describe "$PROJECT" >/dev/null 2>&1; then
+      echo "ERROR: project '$PROJECT' not found or not accessible."
+      echo "  fix one of:"
+      echo "    - set an existing project in config.json (project_id)"
+      echo "    - set create_project=true + billing_account + org_id/folder_id"
+      exit 1
+    fi
+  fi
+  echo "preflight ok: auth valid, project '$PROJECT'${CREATE_PROJECT:+ (create=$CREATE_PROJECT)} reachable"
+}
+
+# Run preflight for any command that talks to GCP / Terraform.
+case "$CMD" in
+  all|alloydb|function|datastream|bq|demo|plan) preflight;;
+esac
+
 case "$CMD" in
   doctor)     source "$SCRIPTS/lib.sh"; check_tools && ok "all required tools present";;
   all)
