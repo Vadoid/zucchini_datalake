@@ -50,7 +50,7 @@ resource "google_bigquery_table" "web_sales" {
 
   biglake_configuration {
     connection_id = google_bigquery_connection.biglake.id
-    storage_uri   = "${local.iceberg_base_uri}/web_sales"
+    storage_uri   = "${local.iceberg_base_uri}/web_sales/"
     file_format   = "PARQUET"
     table_format  = "ICEBERG"
   }
@@ -77,7 +77,7 @@ resource "google_bigquery_table" "web_returns" {
 
   biglake_configuration {
     connection_id = google_bigquery_connection.biglake.id
-    storage_uri   = "${local.iceberg_base_uri}/web_returns"
+    storage_uri   = "${local.iceberg_base_uri}/web_returns/"
     file_format   = "PARQUET"
     table_format  = "ICEBERG"
   }

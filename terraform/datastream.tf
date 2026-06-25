@@ -94,7 +94,7 @@ resource "google_datastream_stream" "alloydb_to_iceberg" {
       # Write CDC into BigLake-managed Iceberg tables (parquet in our bucket).
       blmt_config {
         bucket          = google_storage_bucket.iceberg.name
-        connection_name = google_bigquery_connection.biglake.name
+        connection_name = "${local.project_id}.${var.region}.${google_bigquery_connection.biglake.connection_id}"
         file_format     = "PARQUET"
         table_format    = "ICEBERG"
         root_path       = "alloydb_iceberg"

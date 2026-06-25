@@ -252,7 +252,7 @@ apply_phase() {
     printf "   …applying: %s resources done, %ss elapsed\n" "$n" "$((SECONDS - t0))"
     sleep 15
   done
-  wait "$pid"; rc=$?
+  if wait "$pid"; then rc=0; else rc=$?; fi
   n="$(grep -c 'Creation complete' "$logf" 2>/dev/null || echo 0)"
   if [[ $rc -ne 0 ]]; then
     warn "terraform apply failed (rc=$rc). Last 30 log lines:"
