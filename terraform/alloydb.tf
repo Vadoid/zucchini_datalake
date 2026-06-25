@@ -30,8 +30,10 @@ resource "google_alloydb_instance" "primary" {
   }
 
   # Datastream postgres source requires logical decoding on AlloyDB.
+  # password.enforce_complexity is mandatory once public IP is enabled.
   database_flags = {
-    "alloydb.logical_decoding" = "on"
+    "alloydb.logical_decoding"   = "on"
+    "password.enforce_complexity" = "on"
   }
 
   # Public IP so the deploy scripts can psql (schema/seed/CDC) from anywhere.
