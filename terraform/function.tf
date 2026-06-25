@@ -71,8 +71,7 @@ resource "google_cloudfunctions2_function" "streamer" {
   depends_on = [
     google_project_service.apis,
     google_secret_manager_secret_version.db_password,
-    google_project_iam_member.build_builder,
-    google_project_iam_member.build_logging,
+    time_sleep.build_sa_propagation,
   ]
 }
 

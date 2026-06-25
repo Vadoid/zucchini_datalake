@@ -23,6 +23,13 @@ resource "google_project_iam_member" "build_logging" {
   member  = "serviceAccount:${data.google_project.this.number}-compute@developer.gserviceaccount.com"
 }
 
+# IAM is eventually consistent; let the build-SA grants propagate before the
+# Cloud Functions build runs, else the build fails on missing permission.
+resource "time_sleep" "build_sa_propagation" {
+  depends_on      = [google_project_iam_member.build_builder, google_project_iam_member.build_logging]
+  create_duration = "60s"
+}
+
 # Datastream's PSC interface must read the network attachment
 # (compute.networkAttachments.get); grant the Datastream service agent.
 resource "google_project_iam_member" "datastream_network_user" {
