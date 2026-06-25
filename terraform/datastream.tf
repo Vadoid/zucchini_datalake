@@ -85,7 +85,7 @@ resource "google_datastream_stream" "alloydb_to_iceberg" {
     destination_connection_profile = google_datastream_connection_profile.dst.id
 
     bigquery_destination_config {
-      data_freshness = "60s"
+      data_freshness = "0s" # BigLake-managed Iceberg (BLMT) requires 0 freshness
 
       single_target_dataset {
         dataset_id = "${local.project_id}:${google_bigquery_dataset.alloydb_iceberg.dataset_id}"
@@ -97,7 +97,7 @@ resource "google_datastream_stream" "alloydb_to_iceberg" {
         connection_name = "${local.project_id}.${var.region}.${google_bigquery_connection.biglake.connection_id}"
         file_format     = "PARQUET"
         table_format    = "ICEBERG"
-        root_path       = "alloydb_iceberg"
+        root_path       = "/alloydb_iceberg"
       }
 
       # Iceberg destination supports append-only only (no in-place merge).
