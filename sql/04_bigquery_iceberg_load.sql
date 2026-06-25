@@ -17,8 +17,8 @@ SELECT
   20250000 + CAST(1 + FLOOR(RAND() * 365) AS INT64)   AS ws_sold_date_sk,
   CAST(1  + FLOOR(RAND() * 200) AS INT64)             AS ws_bill_customer_sk,
   qty,
-  price,
-  ROUND(qty * price, 2)                               AS ws_net_paid
+  CAST(price AS NUMERIC)                               AS ws_sales_price,
+  CAST(ROUND(qty * price, 2) AS NUMERIC)               AS ws_net_paid
 FROM UNNEST(GENERATE_ARRAY(1, 5000)) AS n,
 UNNEST([STRUCT(
   CAST(1 + FLOOR(RAND() * 9) AS INT64) AS qty,
@@ -33,5 +33,5 @@ SELECT
   CAST(1 + FLOOR(RAND() * 100) AS INT64)              AS wr_item_sk,
   20250000 + CAST(1 + FLOOR(RAND() * 365) AS INT64)   AS wr_returned_date_sk,
   CAST(1 + FLOOR(RAND() * 3) AS INT64)                AS wr_return_quantity,
-  ROUND(1 + RAND() * 120, 2)                          AS wr_return_amt
+  CAST(ROUND(1 + RAND() * 120, 2) AS NUMERIC)         AS wr_return_amt
 FROM UNNEST(GENERATE_ARRAY(1, 500)) AS n;

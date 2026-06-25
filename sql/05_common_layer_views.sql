@@ -17,7 +17,7 @@ FROM (
       PARTITION BY ss_sale_sk
       ORDER BY datastream_metadata.source_timestamp DESC
     ) AS _rn
-  FROM `alloydb_iceberg.store_sales`
+  FROM `alloydb_iceberg.public_store_sales`
 )
 WHERE _rn = 1
   AND datastream_metadata.change_type != 'DELETE';
@@ -27,7 +27,7 @@ SELECT * EXCEPT (datastream_metadata, _rn)
 FROM (
   SELECT *, ROW_NUMBER() OVER (
     PARTITION BY c_customer_sk ORDER BY datastream_metadata.source_timestamp DESC) AS _rn
-  FROM `alloydb_iceberg.customer`
+  FROM `alloydb_iceberg.public_customer`
 )
 WHERE _rn = 1 AND datastream_metadata.change_type != 'DELETE';
 
@@ -36,7 +36,7 @@ SELECT * EXCEPT (datastream_metadata, _rn)
 FROM (
   SELECT *, ROW_NUMBER() OVER (
     PARTITION BY i_item_sk ORDER BY datastream_metadata.source_timestamp DESC) AS _rn
-  FROM `alloydb_iceberg.item`
+  FROM `alloydb_iceberg.public_item`
 )
 WHERE _rn = 1 AND datastream_metadata.change_type != 'DELETE';
 
@@ -45,7 +45,7 @@ SELECT * EXCEPT (datastream_metadata, _rn)
 FROM (
   SELECT *, ROW_NUMBER() OVER (
     PARTITION BY d_date_sk ORDER BY datastream_metadata.source_timestamp DESC) AS _rn
-  FROM `alloydb_iceberg.date_dim`
+  FROM `alloydb_iceberg.public_date_dim`
 )
 WHERE _rn = 1 AND datastream_metadata.change_type != 'DELETE';
 
@@ -54,7 +54,7 @@ SELECT * EXCEPT (datastream_metadata, _rn)
 FROM (
   SELECT *, ROW_NUMBER() OVER (
     PARTITION BY s_store_sk ORDER BY datastream_metadata.source_timestamp DESC) AS _rn
-  FROM `alloydb_iceberg.store`
+  FROM `alloydb_iceberg.public_store`
 )
 WHERE _rn = 1 AND datastream_metadata.change_type != 'DELETE';
 

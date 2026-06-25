@@ -2,16 +2,16 @@
 -- (run statements individually as needed).
 
 -- 1) Datastream landed the AlloyDB tables (raw append-only counts).
-SELECT 'store_sales' t, COUNT(*) n FROM `alloydb_iceberg.store_sales`
-UNION ALL SELECT 'customer', COUNT(*) FROM `alloydb_iceberg.customer`
-UNION ALL SELECT 'item',     COUNT(*) FROM `alloydb_iceberg.item`
-UNION ALL SELECT 'date_dim', COUNT(*) FROM `alloydb_iceberg.date_dim`
-UNION ALL SELECT 'store',    COUNT(*) FROM `alloydb_iceberg.store`;
+SELECT 'store_sales' t, COUNT(*) n FROM `alloydb_iceberg.public_store_sales`
+UNION ALL SELECT 'customer', COUNT(*) FROM `alloydb_iceberg.public_customer`
+UNION ALL SELECT 'item',     COUNT(*) FROM `alloydb_iceberg.public_item`
+UNION ALL SELECT 'date_dim', COUNT(*) FROM `alloydb_iceberg.public_date_dim`
+UNION ALL SELECT 'store',    COUNT(*) FROM `alloydb_iceberg.public_store`;
 
 -- 2) Current-state row counts (after dedup) vs raw append-log counts.
 --    store_sales should keep growing while the Cloud Function streams.
 SELECT
-  (SELECT COUNT(*) FROM `alloydb_iceberg.store_sales`)        AS raw_appendlog_rows,
+  (SELECT COUNT(*) FROM `alloydb_iceberg.public_store_sales`)        AS raw_appendlog_rows,
   (SELECT COUNT(*) FROM `common_layer.store_sales_current`)   AS current_rows;
 
 -- 3) BigQuery Iceberg one-off load present.
@@ -23,4 +23,4 @@ SELECT * FROM `common_layer.channel_revenue_by_category`;
 
 -- 5) Freshness check: latest source_timestamp seen from AlloyDB.
 SELECT MAX(datastream_metadata.source_timestamp) AS latest_cdc_event
-FROM `alloydb_iceberg.store_sales`;
+FROM `alloydb_iceberg.public_store_sales`;
