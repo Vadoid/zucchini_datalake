@@ -56,6 +56,12 @@ variable "psa_range_name" {
   default     = "datalake-psa-range"
 }
 
+variable "enable_stream" {
+  type        = bool
+  description = "Gate the Datastream stream. Phase A applies with false (DB has no publication yet); deploy.sh flips it true after schema/CDC are in place."
+  default     = false
+}
+
 variable "alloydb_authorized_cidr" {
   type        = string
   description = "CIDR allowed to reach the AlloyDB public IP for psql. Defaults to 0.0.0.0/0 (any). Set empty to disable the public IP entirely."

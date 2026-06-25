@@ -49,6 +49,8 @@ resource "google_datastream_connection_profile" "dst" {
 }
 
 resource "google_datastream_stream" "alloydb_to_iceberg" {
+  count = var.enable_stream ? 1 : 0
+
   project       = local.project_id
   location      = var.region
   display_name  = "alloydb-to-iceberg"

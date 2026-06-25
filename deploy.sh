@@ -6,12 +6,12 @@
 #   ./deploy.sh [options] [command]
 #
 # Commands (default: all):
-#   all          run every stage in order (provision -> check -> demo)
-#   alloydb      stage 1 only
-#   function     stage 2 only
-#   datastream   stage 3 only
-#   bq           stage 4 only
-#   demo         stage 5 only (views + live streaming demo)
+#   all          full provision in one apply, then DB init + Datastream + load + demo:
+#                  PHASE A  terraform apply (everything, stream gated off)
+#                  DB INIT  schema + CDC publication/slot + seed (psql)
+#                  PHASE B  terraform apply (enable Datastream stream)
+#                  wait stream RUNNING, load bigquery_iceberg, build views, demo
+#   demo         views + live streaming demo only
 #   doctor       check required tools (terraform/gcloud/bq/psql/jq); print fixes
 #   stream X     control streaming: X = start|stop|once|status
 #   plan         terraform plan
@@ -36,7 +36,7 @@
 #   --folder-id ID                                             [TF_VAR_folder_id]
 #   --iters N               demo observation rounds (default 5)
 #   --gap S                 demo seconds between rounds (default 90)
-#   --yes                   non-interactive (no pauses between stages)
+#   --yes                   non-interactive: auto-yes to all confirmations
 #   --install-deps          auto-install any missing tools via brew/apt (opt-in)
 #   --no-write-tfvars       skip rendering terraform.auto.tfvars.json from config
 #   -h | --help
@@ -99,7 +99,7 @@ while [[ $# -gt 0 ]]; do
     --no-write-tfvars)  WRITE_TFVARS=0; shift;;
     --install-deps)     export INSTALL_DEPS=1; shift;;
     -h|--help)          sed -n '2,44p' "$0"; exit 0;;
-    all|alloydb|function|datastream|bq|demo|plan|output|destroy|doctor)
+    all|demo|plan|output|destroy|doctor)
                         CMD="$1"; shift;;
     stream)             CMD="stream"; STREAM_ACTION="${2:-status}"; shift 2 || shift;;
     *) echo "unknown arg: $1" >&2; exit 1;;
@@ -150,7 +150,44 @@ fi
 
 export ALLOYDB_PASSWORD="${PASSWORD:-${ALLOYDB_PASSWORD:-}}"
 
-run_stage() { bash "$SCRIPTS/$1"; }
+# Interactive yes/no (auto-yes with --yes). Returns 0 for yes.
+confirm() {
+  [[ "$YES" == 1 ]] && return 0
+  local a; read -r -p "$1 [y/N] " a; [[ "$a" =~ ^[Yy] ]]
+}
+
+# Show the resolved config and what is about to happen.
+banner() {
+  echo
+  echo "  ┌───────────────────────────────────────────────────────────"
+  echo "  │  zucchini_datalake  —  deploy"
+  echo "  ├───────────────────────────────────────────────────────────"
+  printf  "  │  project   : %s\n" "$PROJECT"
+  printf  "  │  region    : %s   zone: %s\n" "$REGION" "$ZONE"
+  printf  "  │  psql CIDR : %s\n" "${AUTH_CIDR:-<public IP disabled>}"
+  printf  "  │  create    : %s\n" "$CREATE_PROJECT"
+  printf  "  │  demo      : %s rounds, %ss apart\n" "$ITERS" "$GAP"
+  echo "  ├───────────────────────────────────────────────────────────"
+  echo "  │  A) terraform apply (all infra, stream off)"
+  echo "  │  B) DB schema + CDC + seed"
+  echo "  │  C) terraform apply (enable Datastream)"
+  echo "  │  D) wait stream, load BigQuery Iceberg, build views, demo"
+  echo "  └───────────────────────────────────────────────────────────"
+  echo
+}
+
+# Closing summary: where everything landed + how to drive it.
+summary() {
+  echo
+  echo "  ===================  DONE  ==================="
+  TF output 2>/dev/null | sed 's/^/  /'
+  echo
+  echo "  datasets : alloydb_iceberg  bigquery_iceberg  common_layer"
+  echo "  control  : ./deploy.sh stream start|stop|once|status"
+  echo "  validate : bq query --use_legacy_sql=false < sql/06_bigquery_validate.sql"
+  echo "  teardown : ./destroy.sh"
+  echo "  ============================================="
+}
 
 # Fail fast on auth / missing project BEFORE terraform starts creating things.
 preflight() {
@@ -195,31 +232,94 @@ preflight() {
 
 # Run preflight for any command that talks to GCP / Terraform.
 case "$CMD" in
-  all|alloydb|function|datastream|bq|demo|plan) preflight;;
+  all|demo|plan) preflight;;
 esac
 
+TF() { terraform -chdir="$TF_DIR" "$@"; }
+
+# Apply the WHOLE config in one shot; enable_stream gates only the Datastream stream.
+apply_phase() { say "terraform apply (enable_stream=$1)"; TF apply -auto-approve -var="enable_stream=$1"; }
+
+# Schema + CDC publication/slot + seed, run from your laptop over the public IP.
+db_init() {
+  wait_for_db
+  say "create database tpcds (if absent)"
+  psqlt postgres -tAc "SELECT 1 FROM pg_database WHERE datname='tpcds'" | grep -q 1 \
+    || psqlt postgres -c "CREATE DATABASE tpcds;"
+  say "schema";  psqlt tpcds -f "$SQL_DIR/01_alloydb_schema.sql"
+  say "CDC publication + slot + replication role"
+  load_password
+  local tmp; tmp="$(mktemp)"
+  sed "s/change-me-strong-password/${ALLOYDB_PASSWORD}/g" "$SQL_DIR/03_alloydb_cdc_setup.sql" > "$tmp"
+  psqlt tpcds -f "$tmp"; rm -f "$tmp"
+  say "seed";    psqlt tpcds -f "$SQL_DIR/02_alloydb_seed.sql"
+  say "CHECK — AlloyDB row counts"
+  psqlt tpcds -c "SELECT 'store_sales' t,count(*) n FROM store_sales
+                  UNION ALL SELECT 'customer',count(*) FROM customer
+                  UNION ALL SELECT 'item',count(*) FROM item
+                  UNION ALL SELECT 'date_dim',count(*) FROM date_dim
+                  UNION ALL SELECT 'store',count(*) FROM store ORDER BY t;"
+}
+
+wait_stream() {
+  load_cfg
+  local sid st n; sid="$(tfout stream_id)"
+  say "waiting for Datastream '$sid' to reach RUNNING"
+  for _ in $(seq 1 30); do
+    st="$(gcloud datastream streams describe "$sid" --location="$REGION" --project="$PROJECT" --format='value(state)' 2>/dev/null || true)"
+    echo "   state=$st"; [[ "$st" == RUNNING ]] && break
+    [[ "$st" == FAILED ]] && die "stream FAILED — check publication/slot/network attachment"
+    sleep 10
+  done
+  say "waiting for Iceberg tables to backfill into alloydb_iceberg"
+  for _ in $(seq 1 30); do
+    n="$(bq --project_id="$PROJECT" ls --max_results=50 alloydb_iceberg 2>/dev/null | grep -c TABLE || true)"
+    echo "   tables=${n:-0}"; [[ "${n:-0}" -ge 5 ]] && break; sleep 15
+  done
+  bq --project_id="$PROJECT" ls alloydb_iceberg || true
+}
+
+bq_load() {
+  load_cfg
+  say "one-off load into bigquery_iceberg"
+  bq --project_id="$PROJECT" query --use_legacy_sql=false < "$SQL_DIR/04_bigquery_iceberg_load.sql"
+}
+
 case "$CMD" in
-  doctor)     source "$SCRIPTS/lib.sh"; check_tools && ok "all required tools present";;
+  doctor)  source "$SCRIPTS/lib.sh"; check_tools && ok "all required tools present";;
+
   all)
-    terraform -chdir="$TF_DIR" init -input=false >/dev/null
-    if [[ "$YES" == 1 ]]; then
-      run_stage 01_alloydb.sh
-      run_stage 02_function.sh
-      run_stage 03_datastream.sh
-      run_stage 04_bq_iceberg.sh
+    source "$SCRIPTS/lib.sh"; check_tools
+    banner
+    confirm "Provision this stack now?" || die "aborted by user"
+
+    TF init -input=false >/dev/null
+    say "PHASE A — provision ALL infra (Datastream stream off)"
+    apply_phase false
+
+    say "DB INIT — schema, CDC publication/slot, seed"
+    db_init
+
+    say "PHASE B — enable Datastream stream (publication now exists)"
+    apply_phase true
+
+    wait_stream
+    bq_load
+
+    if confirm "Run the live streaming demo now ($ITERS rounds, ${GAP}s apart)?"; then
       bash "$SCRIPTS/05_views_demo.sh" "$ITERS" "$GAP"
     else
-      bash "$SCRIPTS/run_all.sh"
+      say "skipping demo — building views only"
+      bq --project_id="$PROJECT" query --use_legacy_sql=false < "$SQL_DIR/05_common_layer_views.sql"
     fi
+
+    summary
     ;;
-  alloydb)    terraform -chdir="$TF_DIR" init -input=false >/dev/null; run_stage 01_alloydb.sh;;
-  function)   run_stage 02_function.sh;;
-  datastream) run_stage 03_datastream.sh;;
-  bq)         run_stage 04_bq_iceberg.sh;;
-  demo)       bash "$SCRIPTS/05_views_demo.sh" "$ITERS" "$GAP";;
-  stream)     bash "$SCRIPTS/stream.sh" "${STREAM_ACTION:-status}";;
-  plan)       terraform -chdir="$TF_DIR" init -input=false >/dev/null; terraform -chdir="$TF_DIR" plan;;
-  output)     terraform -chdir="$TF_DIR" output;;
-  destroy)    bash "$ROOT/destroy.sh";;
+
+  demo)    bash "$SCRIPTS/05_views_demo.sh" "$ITERS" "$GAP";;
+  stream)  bash "$SCRIPTS/stream.sh" "${STREAM_ACTION:-status}";;
+  plan)    TF init -input=false >/dev/null; TF plan;;
+  output)  TF output;;
+  destroy) bash "$ROOT/destroy.sh";;
   *) echo "unknown command: $CMD" >&2; exit 1;;
 esac

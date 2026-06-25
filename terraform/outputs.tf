@@ -16,7 +16,7 @@ output "alloydb_public_ip" {
 }
 
 output "stream_id" {
-  value = google_datastream_stream.alloydb_to_iceberg.stream_id
+  value = try(google_datastream_stream.alloydb_to_iceberg[0].stream_id, "alloydb-to-iceberg")
 }
 
 output "alloydb_ip" {
