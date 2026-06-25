@@ -1,0 +1,21 @@
+# deploy/destroy logs (written to repo root)
+*.log
+
+# local agent/tooling
+.claude/
+
+# secrets / local config (use config.example.json as the template)
+config.json
+
+# terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/terraform.tfvars
+terraform/*.tfplan
+terraform/build/
+
+# python
+__pycache__/
+*.pyc
