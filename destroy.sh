@@ -91,5 +91,12 @@ done
 say "terraform destroy (all managed resources)"
 terraform -chdir="$TF_DIR" destroy -auto-approve
 
+# GCP auto-creates a gen2 Cloud Functions source-staging bucket that Terraform
+# does not own; remove it so no GCS buckets linger.
+say "remove leftover Cloud Functions staging bucket (if any)"
+pnum="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)' 2>/dev/null || true)"
+[[ -n "$pnum" ]] && gcloud storage rm -r "gs://gcf-v2-sources-${pnum}-${REGION}" --project="$PROJECT" 2>/dev/null || true
+
 ok "teardown complete for project $PROJECT"
+echo "verify:  gcloud storage buckets list --project $PROJECT ; bq --project_id=$PROJECT ls"
 echo "if anything lingered, re-run, or use:  ./destroy.sh --project $PROJECT --delete-project"

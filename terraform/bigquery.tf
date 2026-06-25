@@ -9,6 +9,7 @@
 
 resource "google_bigquery_dataset" "alloydb_iceberg" {
   project       = local.project_id
+  delete_contents_on_destroy = true
   dataset_id    = "alloydb_iceberg"
   location      = var.region
   friendly_name = "AlloyDB CDC (Iceberg, append-only via Datastream)"
@@ -19,6 +20,7 @@ resource "google_bigquery_dataset" "alloydb_iceberg" {
 
 resource "google_bigquery_dataset" "bigquery_iceberg" {
   project       = local.project_id
+  delete_contents_on_destroy = true
   dataset_id    = "bigquery_iceberg"
   location      = var.region
   friendly_name = "Native BigQuery Iceberg tables (one-off load)"
@@ -29,6 +31,7 @@ resource "google_bigquery_dataset" "bigquery_iceberg" {
 
 resource "google_bigquery_dataset" "common_layer" {
   project       = local.project_id
+  delete_contents_on_destroy = true
   dataset_id    = "common_layer"
   location      = var.region
   friendly_name = "Common layer views joining AlloyDB + BigQuery Iceberg"
