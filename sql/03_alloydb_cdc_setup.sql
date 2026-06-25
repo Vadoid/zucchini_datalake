@@ -22,11 +22,10 @@ DROP PUBLICATION IF EXISTS datalake_pub;
 CREATE PUBLICATION datalake_pub
   FOR TABLE store_sales, customer, item, date_dim, store;
 
--- 3) Logical replication slot consumed by the stream.
-SELECT pg_create_logical_replication_slot('datalake_slot', 'pgoutput')
-WHERE NOT EXISTS (
-  SELECT 1 FROM pg_replication_slots WHERE slot_name = 'datalake_slot'
-);
-
--- Note: publication + slot names must match terraform/datastream.tf
--- (postgresql_source_config.publication / replication_slot).
+-- 3) Logical replication slot.
+-- NOTE: AlloyDB's `postgres` user is NOT a superuser/replication role, so it
+-- CANNOT create a slot. Create it as the datastream_user (which has REPLICATION):
+--   psql "host=<ip> dbname=tpcds user=datastream_user" -c \
+--     "SELECT pg_create_logical_replication_slot('datalake_slot','pgoutput');"
+-- deploy.sh does this automatically. Publication + slot names must match
+-- terraform/datastream.tf (postgresql_source_config.publication / replication_slot).

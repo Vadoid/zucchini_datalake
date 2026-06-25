@@ -269,11 +269,16 @@ db_init() {
   psqlt postgres -tAc "SELECT 1 FROM pg_database WHERE datname='tpcds'" | grep -q 1 \
     || psqlt postgres -c "CREATE DATABASE tpcds;"
   say "schema";  psqlt tpcds -f "$SQL_DIR/01_alloydb_schema.sql"
-  say "CDC publication + slot + replication role"
+  say "CDC publication + replication role"
   load_password
   local tmp; tmp="$(mktemp)"
   sed "s/change-me-strong-password/${ALLOYDB_PASSWORD}/g" "$SQL_DIR/03_alloydb_cdc_setup.sql" > "$tmp"
   psqlt tpcds -f "$tmp"; rm -f "$tmp"
+  # The slot must be created by a REPLICATION role; AlloyDB's postgres user is not
+  # one, but datastream_user is. Create it as that role (idempotent).
+  say "replication slot (as datastream_user)"
+  PGPASSWORD="$ALLOYDB_PASSWORD" psql "host=${ALLOYDB_PUB} port=5432 user=datastream_user dbname=tpcds sslmode=require" -tAc \
+    "SELECT pg_create_logical_replication_slot('datalake_slot','pgoutput') WHERE NOT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name='datalake_slot');" || true
   say "seed";    psqlt tpcds -f "$SQL_DIR/02_alloydb_seed.sql"
   say "CHECK — AlloyDB row counts"
   psqlt tpcds -c "SELECT 'store_sales' t,count(*) n FROM store_sales
