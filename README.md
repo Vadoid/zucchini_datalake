@@ -1,145 +1,167 @@
-# zucchini_datalake, AlloyDB → Datastream → BigQuery Iceberg POC
+# zucchini_datalake
 
-Terraformed proof-of-concept: a streaming AlloyDB OLTP source replicated by
-Datastream into BigQuery **Iceberg** tables, joined against a separately-loaded
-BigQuery Iceberg dataset through a common view layer.
+Terraformed GCP proof-of-concept: a streaming **AlloyDB** OLTP source replicated by
+**Datastream** into **BigQuery managed Iceberg**, joined against a separately-loaded
+Iceberg dataset through a common view layer. One script drives the whole lifecycle.
 
 ## Architecture
 
-```
-VPC + Private Services Access
-  └─ AlloyDB (private IP, postgres, logical_decoding=on)
-       tables: store_sales (fact) + customer/item/date_dim/store (dims)
-       publication "datalake_pub" + slot "datalake_slot"
-        │
-        │  Cloud Function (datalake-streamer)  ── mini-batch INSERTs into store_sales
-        │  driven by Cloud Scheduler (every 1 min; paused = stopped)
-        ▼
-  Datastream (managed PSC interface via network attachment → AlloyDB private IP)
-   append-only CDC into BigLake-managed Iceberg
-        ▼
-BigQuery
-  ├─ alloydb_iceberg   append-only Iceberg log (Datastream owns these tables)
-  ├─ bigquery_iceberg  native Iceberg tables web_sales / web_returns (one-off load)
-  └─ common_layer      views: dedup-to-current + cross-source joins
-GCS bucket ── parquet storage for both Iceberg datasets
-BigLake connection ── storage.admin on the bucket
-```
+```mermaid
+flowchart LR
+  SCH[Cloud Scheduler<br/>every 1 min] -->|trigger| CF[Cloud Function<br/>datalake-streamer]
+  CF -->|mini-batch INSERT| ADB[(AlloyDB<br/>TPC-DS subset<br/>private IP)]
 
-### Key design facts
-- **Datastream → Iceberg is append-only.** Replicated tables are an append log;
-  `common_layer.*_current` views dedup to latest row per PK (and drop deletes).
-- **Fully managed connectivity, no proxy VM.** Datastream reaches AlloyDB through
-  a managed Private Service Connect interface attached to the VPC via a
-  `google_compute_network_attachment`. Google runs the producer-side VM; you run none.
-- **psql access for the deploy scripts** uses an AlloyDB public IP whose allow-list
-  is `alloydb_authorized_cidr`, defaulting to `0.0.0.0/0` (any) for POC convenience.
-  Datastream still uses the private IP. Tighten the CIDR (or set it `""` to drop the
-  public IP) for anything real.
-- GCS bucket, all BQ datasets and the Datastream connection share one region.
+  ADB -->|Datastream CDC<br/>managed PSC interface<br/>append-only, freshness 0| ALI[(alloydb_iceberg<br/>BigLake Iceberg<br/>public_* tables)]
+  LOAD[one-off DML load] --> BQI[(bigquery_iceberg<br/>web_sales / web_returns<br/>BigLake Iceberg)]
 
-## Layout
-```
-terraform/   all infra (VPC, AlloyDB, Datastream, BQ, GCS, function, scheduler)
-function/    Python Cloud Function source (mini-batch streamer)
-sql/         schema, seed, CDC setup, Iceberg load, views, validation
+  ALI --> CL[common_layer<br/>views: dedup-to-current<br/>+ cross-source join]
+  BQI --> CL
+  CL --> OUT[channel_revenue_by_category<br/>store vs web, net of returns]
+
+  GCS[(GCS bucket<br/>Parquet storage)]
+  ALI -.->|/alloydb_iceberg| GCS
+  BQI -.->|/bigquery_iceberg| GCS
+
+  subgraph laptop [your laptop]
+    DEP[deploy.sh] -->|psql over public IP<br/>schema/seed/CDC| ADB
+    DEP -->|terraform / bq| ALL((GCP))
+  end
 ```
 
-## Config: one file
+Key design points:
 
-`config.json` is the **single source of truth** (copy from `config.example.json`).
-Edit `project_id`, `region`, `zone`. `alloydb_authorized_cidr` defaults to
-`0.0.0.0/0` (any) for psql. Leave `alloydb_password` as the placeholder and it is
-**auto-generated** on first deploy and written back into `config.json` (local,
-gitignored). `deploy.sh` renders `terraform/terraform.auto.tfvars.json` from it,
-so plain `terraform` works too. You never hand-edit tfvars.
+- **Datastream → Iceberg is append-only.** The `alloydb_iceberg.public_*` tables are an
+  append log (every change is a row + a `datastream_metadata` STRUCT). The
+  `common_layer.*_current` views dedup to the latest row per primary key.
+- **Fully managed connectivity, no proxy VM.** Datastream reaches AlloyDB through a
+  managed Private Service Connect interface backed by a `network_attachment`.
+- **Public IP is laptop-only.** AlloyDB has a public IP (allow-list `0.0.0.0/0` by
+  default) purely so `deploy.sh` can run the schema/seed/CDC SQL via `psql`. Datastream
+  itself uses the private IP. Tighten `alloydb_authorized_cidr` (or set it `""` to drop
+  the public IP) for anything beyond a POC.
+- **Two-phase apply.** One Terraform config, but the Datastream stream is gated behind
+  `enable_stream` so the CDC publication/slot exist before the stream turns on.
 
-## One entrypoint: deploy.sh
+## Prerequisites
+
+- Tools: `terraform`, `gcloud`, `bq`, `psql`, `jq` (`./deploy.sh doctor` checks them;
+  `--install-deps` installs missing ones via brew/apt).
+- Auth: `gcloud auth login` **and** `gcloud auth application-default login` (Terraform
+  uses ADC). `deploy.sh` preflight verifies both and the project.
+- A GCP project (existing, or set `create_project: true` + billing/org in config).
+
+## Configure
+
+`config.json` is the **single source of truth** (copy from `config.example.json`):
+
+```json
+{
+  "project_id": "your-project",
+  "region": "us-central1",
+  "zone": "us-central1-a",
+  "alloydb_password": "CHANGE-ME-strong-password",
+  "alloydb_authorized_cidr": "0.0.0.0/0",
+  "create_project": false,
+  "demo_iters": 5,
+  "demo_gap": 90
+}
+```
+
+Only `project_id` is required. Leave the password as the placeholder and it is
+auto-generated and written back. `deploy.sh` renders `terraform.auto.tfvars.json` from
+this, so plain `terraform` works too. Any key can be overridden per-run with a flag
+(`--project`, `--region`, `--password`, …) or `TF_VAR_*`.
+
+## Deploy
 
 ```bash
-cp config.example.json config.json     # set project_id, region, authorized_cidr
-./deploy.sh all                        # password auto-generated, full run
-
-# create a brand-new project (config.json holds billing_account + org_id)
-./deploy.sh --create-project all
-
-# single stages / control
-./deploy.sh alloydb                    # stage 1 only
-./deploy.sh demo --iters 8 --gap 90
-./deploy.sh stream start|stop|once|status
-./deploy.sh destroy
+./deploy.sh                 # full run, interactive (banner confirm + demo prompt)
+./deploy.sh --yes           # full run, no prompts (CI / autonomous)
 ```
 
-Any config key can be overridden per-run by a flag (`--project`, `--region`,
-`--zone`, `--password`, `--authorized-cidr`, `--create-project`,
-`--billing-account`, `--org-id`/`--folder-id`) or `TF_VAR_*` env.
-`--yes` skips inter-stage pauses. `--config PATH` points at a different config.
+`deploy.sh all` does, in order:
 
-## Staged runner (under the hood)
+| Phase | Action |
+|-------|--------|
+| preflight | check tools, gcloud auth, ADC, project |
+| PHASE A   | `terraform apply`, all infra, Datastream stream off |
+| DB INIT   | create db + schema + CDC publication/slot + seed (psql) |
+| PHASE B   | `terraform apply -var=enable_stream=true`, turn the stream on |
+| backfill  | wait for stream RUNNING + Iceberg tables to populate |
+| load      | one-off DML into `bigquery_iceberg` |
+| views+demo| build `common_layer` views, run the live streaming demo |
 
-`scripts/` drives the whole POC stage by stage, each stage **provision, check,
-demonstrate**. psql runs from your laptop straight to the AlloyDB public IP
-(locked to `alloydb_authorized_cidr`); only `gcloud`/`bq`/`psql`/`terraform` needed.
+Other commands:
 
 ```bash
-cp config.example.json config.json   # set project_id, region, authorized_cidr
-./deploy.sh plan >/dev/null          # one-time: render tfvars from config.json
-./scripts/run_all.sh            # interactive, pauses + checks between stages
-# or run stages individually:
-./scripts/01_alloydb.sh         # AlloyDB + net + PSC attachment, schema, CDC, seed -> count check
-./scripts/02_function.sh        # deploy streamer, trigger once              -> rows grew?
-./scripts/03_datastream.sh      # GCS+BigLake+stream, wait RUNNING           -> BQ tables check
-./scripts/04_bq_iceberg.sh      # native Iceberg tables + one-off load       -> count check
-./scripts/05_views_demo.sh 5 90 # views, stream ON, watch joins change x5    -> live demo
+./deploy.sh plan            # render tfvars from config + terraform plan
+./deploy.sh output          # terraform outputs
+./deploy.sh doctor          # tool check
+./deploy.sh --install-deps all   # auto-install missing tools, then deploy
 ```
 
-Helpers: `scripts/stream.sh start|stop|once|status` controls streaming;
-`./destroy.sh` tears everything down.
+Terraform's verbose output streams to `tf-apply-*.log`; the terminal shows compact
+progress. The whole run is logged to `deploy-<timestamp>.log`.
 
-## Run order (manual, code-only)
+## Monitor
 
-1. **Provision infra**
-   ```bash
-   ./deploy.sh plan >/dev/null    # render terraform.auto.tfvars.json from config.json
-   cd terraform
-   terraform init
-   terraform apply
-   ```
+```bash
+# streaming control (the Cloud Scheduler job that drives the function)
+./deploy.sh stream status          # ENABLED/PAUSED + schedule
+./deploy.sh stream start           # begin streaming (every 1 min)
+./deploy.sh stream once            # fire a single mini-batch now
+./deploy.sh stream stop            # pause streaming
 
-2. **Create DB + schema + seed + CDC** (use the AlloyDB public IP from outputs;
-   reachable since `alloydb_authorized_cidr` defaults to `0.0.0.0/0`)
-   ```bash
-   IP=$(terraform output -raw alloydb_public_ip)
-   psql "host=$IP user=postgres sslmode=require" -c "CREATE DATABASE tpcds;"
-   psql "host=$IP dbname=tpcds user=postgres sslmode=require" -f ../sql/01_alloydb_schema.sql
-   psql "host=$IP dbname=tpcds user=postgres sslmode=require" -f ../sql/02_alloydb_seed.sql
-   # edit 03_*.sql password to match alloydb_password first
-   psql "host=$IP dbname=tpcds user=postgres sslmode=require" -f ../sql/03_alloydb_cdc_setup.sql
-   ```
-   The publication/slot must exist before the Datastream stream reaches RUNNING.
-   If `terraform apply` created the stream before the slot existed, it will retry;
-   otherwise re-apply.
+# Datastream health
+gcloud datastream streams describe alloydb-to-iceberg \
+  --location <region> --format='value(state)'      # expect RUNNING
 
-3. **Load the BigQuery Iceberg dataset (one-off)**
-   ```bash
-   bq query --use_legacy_sql=false < ../sql/04_bigquery_iceberg_load.sql
-   ```
+# data validation (counts, current-state, the cross-source join)
+bq query --use_legacy_sql=false < sql/06_bigquery_validate.sql
 
-4. **Start streaming**
-   ```bash
-   gcloud scheduler jobs resume datalake-stream-tick --location <region>
-   # stop:  gcloud scheduler jobs pause datalake-stream-tick --location <region>
-   ```
+# quick row counts
+bq query --use_legacy_sql=false \
+  'SELECT (SELECT COUNT(*) FROM `alloydb_iceberg.public_store_sales`) AS replicated,
+          (SELECT COUNT(*) FROM `common_layer.store_sales_current`)   AS current_state'
 
-5. **Build the common layer + validate**
-   ```bash
-   bq query --use_legacy_sql=false < ../sql/05_common_layer_views.sql
-   bq query --use_legacy_sql=false < ../sql/06_bigquery_validate.sql
-   ```
+# function logs
+gcloud functions logs read datalake-streamer --region <region>
+```
+
+The headline result is `common_layer.channel_revenue_by_category`: store revenue
+(AlloyDB → Iceberg) vs web revenue (native Iceberg) per category, net of returns. With
+streaming on, `replicated`/`current_state` climb in near-real-time (`data_freshness=0`).
 
 ## Teardown
+
 ```bash
-cd terraform && terraform destroy
+./destroy.sh                # confirm prompt
+./destroy.sh --yes          # no prompt
+./destroy.sh --delete-project   # nuke the whole project (only if deploy created it)
 ```
-Datastream-created tables in `alloydb_iceberg` are not Terraform-managed, 
-empty the dataset / delete the stream's objects if `destroy` complains.
+
+`destroy.sh` pauses the scheduler, stops the stream, deletes the Datastream-created
+tables in `alloydb_iceberg` (not Terraform-managed), then `terraform destroy`. GCS
+buckets are `force_destroy`, so the Iceberg Parquet data is removed with them.
+
+## Layout
+
+```
+deploy.sh / destroy.sh   lifecycle entrypoints (config.json -> tfvars -> apply -> SQL -> demo)
+config.json              single source of truth (gitignored; copy from config.example.json)
+terraform/               all infra (AlloyDB, VPC+PSC, Datastream, BigQuery, GCS, function, scheduler)
+function/                gen2 Cloud Function, mini-batch streamer (psycopg2)
+sql/                     schema, seed, CDC, Iceberg load, common_layer views, validation
+scripts/                 lib.sh helpers, 05_views_demo.sh, stream.sh
+```
+
+## Notes / gotchas baked in
+
+- Datastream names BLMT tables `<schema>_<table>` (e.g. `public_store_sales`).
+- BLMT stream config requires `data_freshness = 0`, a `root_path` starting with `/`,
+  and `connection_name` in `{project}.{location}.{name}` form.
+- AlloyDB's `postgres` user can't create a replication slot (not a REPLICATION role);
+  the slot is created as `datastream_user`.
+- This org grants no default service-agent IAM: the compute default SA needs
+  `cloudbuild.builds.builder` + `logging.logWriter` (gen2 build) and the Datastream
+  service agent needs `compute.networkUser` (PSC attachment). All in `terraform/iam.tf`.
