@@ -19,8 +19,63 @@ die()   { echo -e "${c_red}XX ${c_off} $*" >&2; exit 1; }
 pause() { echo; read -r -p "$(echo -e "${c_yel}-- press ENTER to continue --${c_off}")" _; echo; }
 
 # --- prerequisites ---------------------------------------------------------
-need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
-check_tools() { need terraform; need gcloud; need bq; need psql; }
+REQUIRED_TOOLS=(terraform gcloud bq psql jq)
+
+# Per-tool install command for the current package manager.
+install_hint() {
+  local t="$1" mgr="$2"
+  case "$mgr:$t" in
+    brew:terraform) echo "brew install terraform";;
+    brew:gcloud|brew:bq) echo "brew install --cask google-cloud-sdk";;
+    brew:psql) echo "brew install libpq && brew link --force libpq";;
+    brew:jq) echo "brew install jq";;
+    apt:terraform) echo "sudo apt-get install -y terraform   # needs HashiCorp apt repo";;
+    apt:gcloud|apt:bq) echo "sudo apt-get install -y google-cloud-cli";;
+    apt:psql) echo "sudo apt-get install -y postgresql-client";;
+    apt:jq) echo "sudo apt-get install -y jq";;
+    *) echo "install '$t' manually";;
+  esac
+}
+
+pkg_mgr() {
+  if command -v brew >/dev/null 2>&1; then echo brew
+  elif command -v apt-get >/dev/null 2>&1; then echo apt
+  else echo none; fi
+}
+
+# Opt-in installer (INSTALL_DEPS=1). Runs the hint commands for missing tools.
+install_deps() {
+  local mgr; mgr="$(pkg_mgr)"
+  [[ "$mgr" == none ]] && die "no supported package manager (brew/apt) for auto-install"
+  local done_gcloud=0
+  for t in "$@"; do
+    case "$t" in
+      gcloud|bq) [[ "$done_gcloud" == 1 ]] && continue; done_gcloud=1;;
+    esac
+    say "installing $t"
+    eval "$(install_hint "$t" "$mgr")"
+  done
+}
+
+check_tools() {
+  local missing=() t
+  for t in "${REQUIRED_TOOLS[@]}"; do command -v "$t" >/dev/null 2>&1 || missing+=("$t"); done
+  ((${#missing[@]} == 0)) && return 0
+
+  warn "missing tools: ${missing[*]}"
+  if [[ "${INSTALL_DEPS:-0}" == 1 ]]; then
+    install_deps "${missing[@]}"
+    # re-check after install
+    missing=(); for t in "${REQUIRED_TOOLS[@]}"; do command -v "$t" >/dev/null 2>&1 || missing+=("$t"); done
+    ((${#missing[@]} == 0)) && { ok "all tools present"; return 0; }
+    die "still missing after install: ${missing[*]}"
+  fi
+
+  local mgr; mgr="$(pkg_mgr)"
+  echo "install with:"
+  for t in "${missing[@]}"; do echo "  $(install_hint "$t" "$mgr")"; done
+  die "install the tools above, or re-run with: ./deploy.sh --install-deps <cmd>"
+}
 
 # --- terraform helpers -----------------------------------------------------
 tfout() { terraform -chdir="$TF_DIR" output -raw "$1" 2>/dev/null; }

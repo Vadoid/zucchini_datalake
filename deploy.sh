@@ -12,6 +12,7 @@
 #   datastream   stage 3 only
 #   bq           stage 4 only
 #   demo         stage 5 only (views + live streaming demo)
+#   doctor       check required tools (terraform/gcloud/bq/psql/jq); print fixes
 #   stream X     control streaming: X = start|stop|once|status
 #   plan         terraform plan
 #   output       show terraform outputs
@@ -36,6 +37,7 @@
 #   --iters N               demo observation rounds (default 5)
 #   --gap S                 demo seconds between rounds (default 90)
 #   --yes                   non-interactive (no pauses between stages)
+#   --install-deps          auto-install any missing tools via brew/apt (opt-in)
 #   --no-write-tfvars       skip rendering terraform.auto.tfvars.json from config
 #   -h | --help
 set -euo pipefail
@@ -95,8 +97,9 @@ while [[ $# -gt 0 ]]; do
     --gap)              GAP="$2"; shift 2;;
     --yes|-y)           YES=1; shift;;
     --no-write-tfvars)  WRITE_TFVARS=0; shift;;
-    -h|--help)          sed -n '2,40p' "$0"; exit 0;;
-    all|alloydb|function|datastream|bq|demo|plan|output|destroy)
+    --install-deps)     export INSTALL_DEPS=1; shift;;
+    -h|--help)          sed -n '2,44p' "$0"; exit 0;;
+    all|alloydb|function|datastream|bq|demo|plan|output|destroy|doctor)
                         CMD="$1"; shift;;
     stream)             CMD="stream"; STREAM_ACTION="${2:-status}"; shift 2 || shift;;
     *) echo "unknown arg: $1" >&2; exit 1;;
@@ -140,7 +143,7 @@ ensure_password() {
   fi
 }
 
-if [[ "$WRITE_TFVARS" == 1 && "$CMD" != "output" && "$CMD" != "stream" ]]; then
+if [[ "$WRITE_TFVARS" == 1 && "$CMD" != "output" && "$CMD" != "stream" && "$CMD" != "doctor" ]]; then
   ensure_password
   gen_tfvars
 fi
@@ -150,6 +153,7 @@ export ALLOYDB_PASSWORD="${PASSWORD:-${ALLOYDB_PASSWORD:-}}"
 run_stage() { bash "$SCRIPTS/$1"; }
 
 case "$CMD" in
+  doctor)     source "$SCRIPTS/lib.sh"; check_tools && ok "all required tools present";;
   all)
     terraform -chdir="$TF_DIR" init -input=false >/dev/null
     if [[ "$YES" == 1 ]]; then
