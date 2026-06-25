@@ -238,7 +238,27 @@ esac
 TF() { terraform -chdir="$TF_DIR" "$@"; }
 
 # Apply the WHOLE config in one shot; enable_stream gates only the Datastream stream.
-apply_phase() { say "terraform apply (enable_stream=$1)"; TF apply -auto-approve -var="enable_stream=$1"; }
+# Terraform's verbose output goes to a background log; the terminal shows only a
+# compact progress line (resources done + elapsed). Full log path is printed.
+apply_phase() {
+  local es="$1" logf="$ROOT/tf-apply-${es}.log" t0=$SECONDS pid n rc
+  say "terraform apply (enable_stream=$es) -> log: $(basename "$logf")"
+  TF apply -auto-approve -var="enable_stream=$es" >"$logf" 2>&1 &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    n="$(grep -c 'Creation complete' "$logf" 2>/dev/null || echo 0)"
+    printf "   …applying: %s resources done, %ss elapsed\n" "$n" "$((SECONDS - t0))"
+    sleep 15
+  done
+  wait "$pid"; rc=$?
+  n="$(grep -c 'Creation complete' "$logf" 2>/dev/null || echo 0)"
+  if [[ $rc -ne 0 ]]; then
+    warn "terraform apply failed (rc=$rc). Last 30 log lines:"
+    tail -30 "$logf"
+    die "see full log: $logf"
+  fi
+  ok "apply complete: $n resources created/updated in $((SECONDS - t0))s"
+}
 
 # Schema + CDC publication/slot + seed, run from your laptop over the public IP.
 db_init() {
