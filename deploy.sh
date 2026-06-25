@@ -241,7 +241,9 @@ TF() { terraform -chdir="$TF_DIR" "$@"; }
 # Terraform's verbose output goes to a background log; the terminal shows only a
 # compact progress line (resources done + elapsed). Full log path is printed.
 apply_phase() {
-  local es="$1" logf="$ROOT/tf-apply-${es}.log" t0=$SECONDS pid n rc
+  local es="$1"
+  local logf="$ROOT/tf-apply-${es}.log"
+  local t0=$SECONDS pid n rc
   say "terraform apply (enable_stream=$es) -> log: $(basename "$logf")"
   TF apply -auto-approve -var="enable_stream=$es" >"$logf" 2>&1 &
   pid=$!
