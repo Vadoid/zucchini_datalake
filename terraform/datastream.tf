@@ -14,7 +14,10 @@ resource "google_datastream_private_connection" "pc" {
     network_attachment = google_compute_network_attachment.datastream.id
   }
 
-  depends_on = [google_project_service.apis]
+  depends_on = [
+    google_project_service.apis,
+    google_project_iam_member.datastream_network_user,
+  ]
 }
 
 # Source: PostgreSQL (AlloyDB) at its private IP, reached over the PSC interface.

@@ -24,9 +24,17 @@ resource "google_bigquery_connection" "biglake" {
   depends_on = [google_project_service.apis]
 }
 
+# The connection's delegated SA is created asynchronously; wait for it to
+# propagate before binding IAM, else: "Service account ... does not exist".
+resource "time_sleep" "biglake_sa_propagation" {
+  depends_on      = [google_bigquery_connection.biglake]
+  create_duration = "30s"
+}
+
 # The connection's auto-created service account needs storage admin on the bucket.
 resource "google_storage_bucket_iam_member" "biglake_sa" {
-  bucket = google_storage_bucket.iceberg.name
-  role   = "roles/storage.admin"
-  member = "serviceAccount:${google_bigquery_connection.biglake.cloud_resource[0].service_account_id}"
+  bucket     = google_storage_bucket.iceberg.name
+  role       = "roles/storage.admin"
+  member     = "serviceAccount:${google_bigquery_connection.biglake.cloud_resource[0].service_account_id}"
+  depends_on = [time_sleep.biglake_sa_propagation]
 }

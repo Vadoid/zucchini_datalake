@@ -1,6 +1,35 @@
 # ---------------------------------------------------------------------------
-# Secret + service accounts for the streaming Cloud Function and Scheduler.
+# Service-agent IAM grants that GCP does NOT create by default in this org,
+# plus the secret + service accounts for the function and scheduler.
 # ---------------------------------------------------------------------------
+
+data "google_project" "this" {
+  project_id = local.project_id
+  depends_on = [google_project_service.apis]
+}
+
+# Gen2 Cloud Functions build with the DEFAULT COMPUTE service account; it needs
+# build + log-write roles or the Cloud Build step fails ("missing permission on
+# the build service account").
+resource "google_project_iam_member" "build_builder" {
+  project = local.project_id
+  role    = "roles/cloudbuild.builds.builder"
+  member  = "serviceAccount:${data.google_project.this.number}-compute@developer.gserviceaccount.com"
+}
+
+resource "google_project_iam_member" "build_logging" {
+  project = local.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${data.google_project.this.number}-compute@developer.gserviceaccount.com"
+}
+
+# Datastream's PSC interface must read the network attachment
+# (compute.networkAttachments.get); grant the Datastream service agent.
+resource "google_project_iam_member" "datastream_network_user" {
+  project = local.project_id
+  role    = "roles/compute.networkUser"
+  member  = "serviceAccount:service-${data.google_project.this.number}@gcp-sa-datastream.iam.gserviceaccount.com"
+}
 
 resource "google_secret_manager_secret" "db_password" {
   project   = local.project_id
