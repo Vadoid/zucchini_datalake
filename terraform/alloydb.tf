@@ -34,5 +34,18 @@ resource "google_alloydb_instance" "primary" {
     "alloydb.logical_decoding" = "on"
   }
 
+  # Public IP so the deploy scripts can run psql (schema/seed/CDC) from your
+  # laptop directly. Datastream still uses the private IP via PSC. POC only —
+  # locked to var.alloydb_authorized_cidr. Set enable_public_ip=false to disable.
+  network_config {
+    enable_public_ip = var.alloydb_authorized_cidr != ""
+    dynamic "authorized_external_networks" {
+      for_each = var.alloydb_authorized_cidr != "" ? [var.alloydb_authorized_cidr] : []
+      content {
+        cidr_range = authorized_external_networks.value
+      }
+    }
+  }
+
   depends_on = [google_alloydb_cluster.main]
 }

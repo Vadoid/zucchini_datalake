@@ -1,23 +1,23 @@
 # ---------------------------------------------------------------------------
-# Datastream: AlloyDB (via proxy VM) -> BigLake Iceberg (append-only).
+# Datastream: AlloyDB -> BigLake Iceberg (append-only), fully managed.
+# Connectivity is a Datastream-managed Private Service Connect interface that
+# attaches to our VPC via a network attachment and reaches AlloyDB directly.
 # ---------------------------------------------------------------------------
 
-# Datastream's own VPC peering into our network (reaches the proxy VM).
 resource "google_datastream_private_connection" "pc" {
   project               = local.project_id
   location              = var.region
   display_name          = "datalake-pc"
   private_connection_id = "datalake-pc"
 
-  vpc_peering_config {
-    vpc    = google_compute_network.vpc.id
-    subnet = var.datastream_cidr
+  psc_interface_config {
+    network_attachment = google_compute_network_attachment.datastream.id
   }
 
   depends_on = [google_project_service.apis]
 }
 
-# Source: PostgreSQL (AlloyDB) reached through the reverse-proxy VM's private IP.
+# Source: PostgreSQL (AlloyDB) at its private IP, reached over the PSC interface.
 resource "google_datastream_connection_profile" "src" {
   project               = local.project_id
   location              = var.region
@@ -25,7 +25,7 @@ resource "google_datastream_connection_profile" "src" {
   connection_profile_id = "alloydb-source"
 
   postgresql_profile {
-    hostname = google_compute_instance.ds_proxy.network_interface[0].network_ip
+    hostname = google_alloydb_instance.primary.ip_address
     port     = 5432
     username = "datastream_user"
     password = var.alloydb_password
@@ -103,7 +103,6 @@ resource "google_datastream_stream" "alloydb_to_iceberg" {
   backfill_all {}
 
   depends_on = [
-    google_compute_instance.ds_proxy,
     google_storage_bucket_iam_member.biglake_sa,
     google_bigquery_dataset.alloydb_iceberg,
   ]

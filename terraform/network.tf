@@ -47,33 +47,16 @@ resource "google_vpc_access_connector" "connector" {
   depends_on = [google_project_service.apis]
 }
 
-# Allow the reverse-proxy VM and connector range to reach AlloyDB (5432) inside the VPC.
-resource "google_compute_firewall" "allow_internal" {
-  project = local.project_id
-  name    = "${var.vpc_name}-allow-internal"
-  network = google_compute_network.vpc.id
+# Network attachment: entry point for the Datastream-managed Private Service
+# Connect interface. Datastream's producer VM draws an IP from this subnet and
+# reaches the AlloyDB private IP directly — no user-managed proxy.
+resource "google_compute_network_attachment" "datastream" {
+  provider              = google-beta
+  project               = local.project_id
+  name                  = "datalake-ds-na"
+  region                = var.region
+  connection_preference = "ACCEPT_AUTOMATIC"
+  subnetworks           = [google_compute_subnetwork.primary.self_link]
 
-  allow {
-    protocol = "tcp"
-    ports    = ["5432", "22"]
-  }
-
-  source_ranges = [
-    "10.80.0.0/24", # primary subnet (proxy VM)
-    "10.8.0.0/28",  # vpc connector
-    var.datastream_cidr,
-  ]
-}
-
-# IAP range, so you can SSH the proxy VM without a public IP for debugging.
-resource "google_compute_firewall" "allow_iap_ssh" {
-  project       = local.project_id
-  name          = "${var.vpc_name}-allow-iap-ssh"
-  network       = google_compute_network.vpc.id
-  source_ranges = ["35.235.240.0/20"]
-
-  allow {
-    protocol = "tcp"
-    ports    = ["22"]
-  }
+  depends_on = [google_project_service.apis]
 }

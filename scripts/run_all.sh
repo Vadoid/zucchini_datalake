@@ -9,8 +9,9 @@ AUTO=0
 [[ "${1:-}" == "--yes" ]] && AUTO=1
 gate() { [[ "$AUTO" == 1 ]] || pause; }
 
-say "PRECHECK — terraform.tfvars present?"
-[[ -f "$TF_DIR/terraform.tfvars" ]] || die "create terraform/terraform.tfvars first (see .example)"
+say "PRECHECK — config.json + rendered tfvars"
+[[ -f "$CONFIG" ]] || die "create config.json (cp config.example.json config.json)"
+[[ -f "$TF_DIR/terraform.auto.tfvars.json" ]] || die "render tfvars first: ./deploy.sh plan >/dev/null"
 
 say "terraform init"
 terraform -chdir="$TF_DIR" init -input=false >/dev/null

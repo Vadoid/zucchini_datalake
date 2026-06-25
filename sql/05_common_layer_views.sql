@@ -91,14 +91,36 @@ LEFT JOIN `common_layer.date_dim_current` d ON s.date_sk = d.d_date_sk;
 
 -- ---------------------------------------------------------------------------
 -- Channel revenue comparison by category (the headline join result).
+-- Web revenue is netted against web_returns (BigQuery Iceberg); store has no
+-- returns source, so returns_amt is 0 for the store channel.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW `common_layer.channel_revenue_by_category` AS
+WITH gross AS (
+  SELECT i_category, channel,
+         COUNT(*)            AS line_items,
+         SUM(quantity)       AS units,
+         ROUND(SUM(net_paid), 2) AS gross_revenue
+  FROM `common_layer.sales_unified`
+  GROUP BY i_category, channel
+),
+web_returns_by_cat AS (
+  SELECT i.i_category,
+         'web' AS channel,
+         SUM(wr.wr_return_quantity)      AS returns_units,
+         ROUND(SUM(wr.wr_return_amt), 2) AS returns_amt
+  FROM `bigquery_iceberg.web_returns` wr
+  JOIN `common_layer.item_current` i ON wr.wr_item_sk = i.i_item_sk
+  GROUP BY i.i_category
+)
 SELECT
-  i_category,
-  channel,
-  COUNT(*)            AS line_items,
-  SUM(quantity)       AS units,
-  ROUND(SUM(net_paid), 2) AS revenue
-FROM `common_layer.sales_unified`
-GROUP BY i_category, channel
-ORDER BY i_category, channel;
+  g.i_category,
+  g.channel,
+  g.line_items,
+  g.units,
+  g.gross_revenue,
+  COALESCE(r.returns_units, 0) AS returns_units,
+  COALESCE(r.returns_amt, 0)   AS returns_amt,
+  ROUND(g.gross_revenue - COALESCE(r.returns_amt, 0), 2) AS net_revenue
+FROM gross g
+LEFT JOIN web_returns_by_cat r USING (i_category, channel)
+ORDER BY g.i_category, g.channel;

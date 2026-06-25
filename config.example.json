@@ -5,6 +5,8 @@
 
   "alloydb_password": "CHANGE-ME-strong-password",
 
+  "alloydb_authorized_cidr": "YOUR.PUBLIC.IP/32",
+
   "create_project": false,
   "billing_account": "",
   "org_id": "",

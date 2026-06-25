@@ -10,7 +10,7 @@
 #   ./destroy.sh [options]
 #
 # Options:
-#   --project ID        project to target (else read from terraform output / tfvars)
+#   --project ID        project to target (else read from terraform output / config.json)
 #   --region REGION     default from terraform output
 #   --delete-project    skip terraform; delete the WHOLE GCP project (fastest,
 #                       only sensible when deploy created it with --create-project)
@@ -46,16 +46,13 @@ done
 
 cfg() { command -v jq >/dev/null 2>&1 && [[ -f "$CONFIG" ]] && jq -r --arg k "$1" '.[$k] // empty' "$CONFIG" 2>/dev/null || true; }
 
-# Resolve project/region: flag > terraform output > config.json > tfvars.
+# Resolve project/region: flag > terraform output > config.json.
 PROJECT="$PROJECT_FLAG"
 REGION="$REGION_FLAG"
 [[ -z "$PROJECT" ]] && PROJECT="$(tfout project_id 2>/dev/null || true)"
 [[ -z "$REGION"  ]] && REGION="$(tfout region 2>/dev/null || true)"
 [[ -z "$PROJECT" ]] && PROJECT="$(cfg project_id)"
 [[ -z "$REGION"  ]] && REGION="$(cfg region)"
-if [[ -z "$PROJECT" && -f "$TF_DIR/terraform.tfvars" ]]; then
-  PROJECT="$(grep -E '^\s*project_id' "$TF_DIR/terraform.tfvars" | sed -E 's/.*"(.*)".*/\1/')"
-fi
 [[ -n "$PROJECT" ]] || die "could not resolve project (pass --project or set config.json)"
 REGION="${REGION:-us-central1}"
 export PROJECT REGION

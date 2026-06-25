@@ -11,7 +11,7 @@ tf_apply \
 
 ok "function URI: $(tfout function_uri)"
 
-start_tunnel
+alloydb_host
 before="$(psqlt tpcds -tAc 'SELECT count(*) FROM store_sales')"
 say "store_sales rows BEFORE: $before"
 

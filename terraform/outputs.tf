@@ -10,8 +10,9 @@ output "zone" {
   value = var.zone
 }
 
-output "proxy_vm_name" {
-  value = google_compute_instance.ds_proxy.name
+output "alloydb_public_ip" {
+  value       = try(google_alloydb_instance.primary.public_ip_address, "")
+  description = "AlloyDB public IP (psql from your laptop). Empty when alloydb_authorized_cidr unset."
 }
 
 output "stream_id" {
@@ -21,11 +22,6 @@ output "stream_id" {
 output "alloydb_ip" {
   value       = google_alloydb_instance.primary.ip_address
   description = "AlloyDB primary private IP."
-}
-
-output "datastream_proxy_ip" {
-  value       = google_compute_instance.ds_proxy.network_interface[0].network_ip
-  description = "Reverse-proxy VM IP that Datastream connects to."
 }
 
 output "iceberg_bucket" {

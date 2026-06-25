@@ -1,24 +1,17 @@
 #!/usr/bin/env bash
-# STAGE 1 — provision AlloyDB (+ network + proxy), create schema + CDC + seed, CHECK.
+# STAGE 1 — provision AlloyDB (+ network + PSC attachment), schema + CDC + seed, CHECK.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 check_tools
 
-say "STAGE 1: AlloyDB cluster, network, Datastream proxy VM"
+say "STAGE 1: AlloyDB cluster + network + Datastream network attachment"
 tf_apply \
   google_alloydb_instance.primary \
-  google_compute_instance.ds_proxy \
-  google_compute_router_nat.nat \
-  google_compute_firewall.allow_internal \
-  google_compute_firewall.allow_iap_ssh \
+  google_compute_network_attachment.datastream \
   google_vpc_access_connector.connector
 
 load_cfg
-ok "AlloyDB IP: $(tfout alloydb_ip)   proxy: $PROXY"
-
-say "waiting 30s for proxy VM startup script (socat) to settle"
-sleep 30
-
-start_tunnel
+alloydb_host
+ok "AlloyDB private IP: $(tfout alloydb_ip)   public IP: $ALLOYDB_PUB"
 
 say "create database tpcds (if absent)"
 psqlt postgres -tAc "SELECT 1 FROM pg_database WHERE datname='tpcds'" | grep -q 1 \

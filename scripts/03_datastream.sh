@@ -16,7 +16,7 @@ for _ in $(seq 1 30); do
             --location="$REGION" --project="$PROJECT" --format='value(state)' 2>/dev/null || true)"
   echo "   state=$state"
   [[ "$state" == "RUNNING" ]] && break
-  [[ "$state" == "FAILED" ]] && die "stream FAILED — check publication/slot + proxy"
+  [[ "$state" == "FAILED" ]] && die "stream FAILED — check publication/slot + PSC network attachment"
   sleep 10
 done
 [[ "$state" == "RUNNING" ]] || warn "stream not RUNNING yet (state=$state); backfill may still proceed"

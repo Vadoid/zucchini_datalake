@@ -35,7 +35,7 @@ variable "region" {
 
 variable "zone" {
   type        = string
-  description = "Zone for the Datastream reverse-proxy VM."
+  description = "Zone within the region (AlloyDB / subnet locality)."
   default     = "us-central1-a"
 }
 
@@ -56,10 +56,10 @@ variable "psa_range_name" {
   default     = "datalake-psa-range"
 }
 
-variable "datastream_cidr" {
+variable "alloydb_authorized_cidr" {
   type        = string
-  description = "/29 CIDR for the Datastream private connectivity peering. Must not overlap the VPC or PSA range."
-  default     = "10.81.0.0/29"
+  description = "CIDR allowed to reach the AlloyDB public IP for psql (e.g. YOUR.IP/32). Empty disables the public IP entirely."
+  default     = ""
 }
 
 variable "labels" {
