@@ -32,9 +32,10 @@ BigLake connection ── storage.admin on the bucket
 - **Fully managed connectivity, no proxy VM.** Datastream reaches AlloyDB through
   a managed Private Service Connect interface attached to the VPC via a
   `google_compute_network_attachment`. Google runs the producer-side VM; you run none.
-- **psql access for the deploy scripts** uses an optional AlloyDB public IP locked
-  to `alloydb_authorized_cidr` (e.g. your `/32`). Datastream still uses the private IP.
-  Set `alloydb_authorized_cidr = ""` to disable the public IP entirely.
+- **psql access for the deploy scripts** uses an AlloyDB public IP whose allow-list
+  is `alloydb_authorized_cidr`, defaulting to `0.0.0.0/0` (any) for POC convenience.
+  Datastream still uses the private IP. Tighten the CIDR (or set it `""` to drop the
+  public IP) for anything real.
 - GCS bucket, all BQ datasets and the Datastream connection share one region.
 
 ## Layout
@@ -47,8 +48,8 @@ sql/         schema, seed, CDC setup, Iceberg load, views, validation
 ## Config: one file
 
 `config.json` is the **single source of truth** (copy from `config.example.json`).
-Edit `project_id`, `region`, `zone`, optionally `alloydb_authorized_cidr` (your
-`/32` for psql). Leave `alloydb_password` as the placeholder and it is
+Edit `project_id`, `region`, `zone`. `alloydb_authorized_cidr` defaults to
+`0.0.0.0/0` (any) for psql. Leave `alloydb_password` as the placeholder and it is
 **auto-generated** on first deploy and written back into `config.json` (local,
 gitignored). `deploy.sh` renders `terraform/terraform.auto.tfvars.json` from it,
 so plain `terraform` works too. You never hand-edit tfvars.
@@ -106,7 +107,7 @@ Helpers: `scripts/stream.sh start|stop|once|status` controls streaming;
    ```
 
 2. **Create DB + schema + seed + CDC** (use the AlloyDB public IP from outputs;
-   requires `alloydb_authorized_cidr` set to your IP)
+   reachable since `alloydb_authorized_cidr` defaults to `0.0.0.0/0`)
    ```bash
    IP=$(terraform output -raw alloydb_public_ip)
    psql "host=$IP user=postgres sslmode=require" -c "CREATE DATABASE tpcds;"

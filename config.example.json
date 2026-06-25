@@ -2,16 +2,12 @@
   "project_id": "zucchini-datalake-poc",
   "region": "us-central1",
   "zone": "us-central1-a",
-
   "alloydb_password": "CHANGE-ME-strong-password",
-
-  "alloydb_authorized_cidr": "YOUR.PUBLIC.IP/32",
-
+  "alloydb_authorized_cidr": "0.0.0.0/0",
   "create_project": false,
   "billing_account": "",
   "org_id": "",
   "folder_id": "",
-
   "demo_iters": 5,
   "demo_gap": 90
 }

@@ -58,8 +58,8 @@ variable "psa_range_name" {
 
 variable "alloydb_authorized_cidr" {
   type        = string
-  description = "CIDR allowed to reach the AlloyDB public IP for psql (e.g. YOUR.IP/32). Empty disables the public IP entirely."
-  default     = ""
+  description = "CIDR allowed to reach the AlloyDB public IP for psql. Defaults to 0.0.0.0/0 (any). Set empty to disable the public IP entirely."
+  default     = "0.0.0.0/0"
 }
 
 variable "labels" {
