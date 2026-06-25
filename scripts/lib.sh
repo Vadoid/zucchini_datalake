@@ -111,6 +111,23 @@ alloydb_host() {
   export ALLOYDB_PUB
 }
 
+# Block until AlloyDB accepts connections (public IP can lag instance creation).
+wait_for_db() {
+  alloydb_host
+  load_password
+  say "waiting for AlloyDB to accept connections at $ALLOYDB_PUB"
+  local i
+  for i in $(seq 1 36); do
+    if PGPASSWORD="$ALLOYDB_PASSWORD" PGCONNECT_TIMEOUT=5 psql \
+        "host=$ALLOYDB_PUB port=5432 user=postgres dbname=postgres sslmode=require" \
+        -tAc 'select 1' >/dev/null 2>&1; then
+      ok "AlloyDB reachable"; return 0
+    fi
+    sleep 5
+  done
+  die "AlloyDB not reachable after ~3min (check public IP / firewall / password)"
+}
+
 # --- psql / bq wrappers ----------------------------------------------------
 psqlt() { # psqlt <db> [psql args] -- direct to AlloyDB public IP over SSL
   load_password

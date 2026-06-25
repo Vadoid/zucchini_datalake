@@ -13,6 +13,8 @@ load_cfg
 alloydb_host
 ok "AlloyDB private IP: $(tfout alloydb_ip)   public IP: $ALLOYDB_PUB"
 
+wait_for_db
+
 say "create database tpcds (if absent)"
 psqlt postgres -tAc "SELECT 1 FROM pg_database WHERE datname='tpcds'" | grep -q 1 \
   || psqlt postgres -c "CREATE DATABASE tpcds;"
