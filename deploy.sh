@@ -163,13 +163,6 @@ preflight() {
     gcloud auth login || { echo "ERROR: gcloud auth login failed"; exit 1; }
   fi
 
-  # Application Default Credentials (used by Terraform). Re-login if expired
-  # (this is the 'invalid_rapt' / reauth error mid-apply).
-  if ! gcloud auth application-default print-access-token >/dev/null 2>&1; then
-    echo "Application Default Credentials missing/expired -> launching ADC login..."
-    gcloud auth application-default login || { echo "ERROR: ADC login failed"; exit 1; }
-  fi
-
   # Project must exist (unless Terraform is creating it).
   if [[ "${CREATE_PROJECT}" != "true" ]]; then
     if ! gcloud projects describe "$PROJECT" >/dev/null 2>&1; then
@@ -180,7 +173,24 @@ preflight() {
       exit 1
     fi
   fi
-  echo "preflight ok: auth valid, project '$PROJECT'${CREATE_PROJECT:+ (create=$CREATE_PROJECT)} reachable"
+
+  # Application Default Credentials (used by Terraform). A cached token can still
+  # fail org reauth (invalid_rapt) on sensitive APIs, so EXERCISE serviceusage
+  # with the ADC token rather than just printing it. Re-login on failure.
+  local adc_token rc=1
+  adc_token="$(gcloud auth application-default print-access-token 2>/dev/null || true)"
+  if [[ -n "$adc_token" && "${CREATE_PROJECT}" != "true" ]]; then
+    curl -fsS -o /dev/null -H "Authorization: Bearer $adc_token" \
+      "https://serviceusage.googleapis.com/v1/projects/${PROJECT}/services?pageSize=1" 2>/dev/null && rc=0
+  elif [[ -n "$adc_token" ]]; then
+    rc=0  # creating the project; can't probe serviceusage yet
+  fi
+  if [[ "$rc" != 0 ]]; then
+    echo "ADC missing or failing org reauth (invalid_rapt) -> launching ADC login..."
+    gcloud auth application-default login || { echo "ERROR: ADC login failed"; exit 1; }
+  fi
+
+  echo "preflight ok: auth valid, project '$PROJECT' reachable, ADC accepted by serviceusage"
 }
 
 # Run preflight for any command that talks to GCP / Terraform.
