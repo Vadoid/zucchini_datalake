@@ -21,7 +21,12 @@ resource "google_datastream_private_connection" "pc" {
 }
 
 # Source: PostgreSQL (AlloyDB) at its private IP, reached over the PSC interface.
+# Gated behind enable_stream: creating this profile triggers a connectivity
+# validation that authenticates as datastream_user, which DB INIT creates only
+# after PHASE A. Created in PHASE B (with the stream) so the role exists first.
 resource "google_datastream_connection_profile" "src" {
+  count = var.enable_stream ? 1 : 0
+
   project               = local.project_id
   location              = var.region
   display_name          = "alloydb-source"
@@ -61,7 +66,7 @@ resource "google_datastream_stream" "alloydb_to_iceberg" {
   desired_state = "RUNNING"
 
   source_config {
-    source_connection_profile = google_datastream_connection_profile.src.id
+    source_connection_profile = google_datastream_connection_profile.src[0].id
 
     postgresql_source_config {
       publication      = "datalake_pub"

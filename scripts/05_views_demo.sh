@@ -21,10 +21,10 @@ gcloud scheduler jobs resume datalake-stream-tick --location="$REGION" --project
 snapshot() {
   bqq "
   SELECT
-    (SELECT COUNT(*) FROM \`alloydb_iceberg.store_sales\`)      AS appendlog_rows,
+    (SELECT COUNT(*) FROM \`alloydb_iceberg.public_store_sales\`)      AS appendlog_rows,
     (SELECT COUNT(*) FROM \`common_layer.store_sales_current\`) AS current_rows,
     (SELECT MAX(datastream_metadata.source_timestamp)
-       FROM \`alloydb_iceberg.store_sales\`)                    AS latest_cdc;"
+       FROM \`alloydb_iceberg.public_store_sales\`)                    AS latest_cdc;"
 }
 
 echo

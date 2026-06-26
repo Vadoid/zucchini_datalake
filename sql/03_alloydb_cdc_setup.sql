@@ -13,6 +13,10 @@ BEGIN
   END IF;
 END$$;
 
+-- Sync the password every run so a reused AlloyDB instance (role already exists)
+-- still matches var.alloydb_password from the current machine's config.json.
+ALTER ROLE datastream_user WITH LOGIN REPLICATION PASSWORD 'change-me-strong-password';
+
 GRANT USAGE ON SCHEMA public TO datastream_user;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO datastream_user;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO datastream_user;
