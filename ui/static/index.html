@@ -56,8 +56,17 @@
   .ctl input[type=range] { accent-color:var(--accent); cursor:pointer; }
   .ctl input[type=number] { width:58px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:5px 7px; font-size:13px; }
   .ctl b { color:var(--fg); font-variant-numeric:tabular-nums; min-width:30px; }
+  .chart { margin-top:16px; background:rgba(255,255,255,.02); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
   .spark { width:100%; height:46px; display:block; }
-  .spark-label { font-size:12px; margin-bottom:4px; }
+  .spark-label { font-size:12px; margin-bottom:6px; }
+  .spark-empty { font-size:12px; height:46px; display:flex; align-items:center; }
+  /* slider: thin track + accent thumb (default control is clunky) */
+  input[type=range] { -webkit-appearance:none; appearance:none; width:150px; height:5px;
+    border-radius:999px; background:var(--line); cursor:pointer; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:16px; height:16px;
+    border-radius:50%; background:var(--accent); border:2px solid var(--card); }
+  input[type=range]::-moz-range-thumb { width:14px; height:14px; border:none;
+    border-radius:50%; background:var(--accent); }
   /* health banner + per-row badges */
   .banner { margin-bottom:16px; padding:10px 14px; border-radius:8px; font-size:13px;
             border:1px solid var(--warn); color:var(--warn); background:rgba(210,153,34,.09); }
@@ -111,9 +120,10 @@
       <label class="ctl">batches <input type="number" id="batchesInp" min="1" max="20" value="1"></label>
       <button id="burstBtn">Burst now</button>
     </div>
-    <div style="margin-top:16px;">
+    <div class="chart">
       <div class="muted spark-label">store_sales throughput · <b id="rate">—</b></div>
-      <svg id="spark" class="spark" viewBox="0 0 300 46" preserveAspectRatio="none"></svg>
+      <div id="sparkEmpty" class="muted spark-empty">collecting samples…</div>
+      <svg id="spark" class="spark" viewBox="0 0 300 46" preserveAspectRatio="none" hidden></svg>
     </div>
     <div class="note">Burst inserts <code>store_sales</code> rows into AlloyDB. The slider sets batch size; run up to 20 batches at once. Auto-burst fires one batch a minute.</div>
   </div>
@@ -240,8 +250,9 @@ function pushSample(rows) {
   while (hist.length > 60) hist.shift();
 }
 function drawSpark() {
-  const svg = $("#spark"), W = 300, H = 46;
-  if (hist.length < 2) { svg.innerHTML = '<text x="6" y="26" fill="#8b98a8" font-size="11">collecting…</text>'; $("#rate").textContent = "—"; return; }
+  const svg = $("#spark"), empty = $("#sparkEmpty"), W = 300, H = 46;
+  if (hist.length < 2) { svg.hidden = true; empty.hidden = false; $("#rate").textContent = "—"; return; }
+  empty.hidden = true; svg.hidden = false;
   const xs = hist.map(h => h.t), ys = hist.map(h => h.rows);
   const t0 = xs[0], t1 = xs[xs.length - 1] || t0 + 1;
   const lo = Math.min(...ys), hi = Math.max(...ys), span = (hi - lo) || 1;
