@@ -73,6 +73,23 @@
   .banner.err { border-color:#f85149; color:#ff9b9b; background:rgba(248,81,73,.10); }
   .bkf { font-size:11px; color:var(--accent); margin-left:8px; }
   .err-badge { font-size:11px; color:#ff9b9b; margin-left:8px; }
+  /* revenue panel + KPIs + bars */
+  .kpis { gap:28px; margin:12px 0 4px; flex-wrap:wrap; }
+  .kpi .v { font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .kpi .l { font-size:12px; color:var(--mut); }
+  .kpi.store .v { color:#58a6ff; }
+  .kpi.web .v { color:#bc8cff; }
+  .bars { margin-top:6px; }
+  .barrow { margin:12px 0; }
+  .barrow .cat { font-size:13px; margin-bottom:5px; color:var(--fg); }
+  .bseg { display:flex; align-items:center; gap:10px; margin:3px 0; }
+  .bseg .tag { width:40px; font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.03em; }
+  .bseg .track { flex:1; background:rgba(255,255,255,.04); border-radius:4px; }
+  .bseg .bar { height:13px; border-radius:4px; min-width:2px; transition:width .4s ease; }
+  .bar.store { background:#1f6feb; }
+  .bar.web { background:#8957e5; }
+  .bseg .val { width:96px; text-align:right; font-size:12px; font-variant-numeric:tabular-nums; }
+  .sublog { font-size:11px; color:var(--mut); font-weight:400; }
   /* toggle switch */
   .sw { position:relative; display:inline-block; vertical-align:middle; width:46px; height:26px; flex:0 0 auto; }
   .sw input { opacity:0; width:0; height:0; }
@@ -108,6 +125,16 @@
 <main>
   <div id="healthBanner" class="banner" hidden></div>
 
+  <div class="card" id="revCard">
+    <div class="row">
+      <strong class="grow">Channel revenue by category</strong>
+      <span class="muted">store = AlloyDB live · web = BigQuery Iceberg</span>
+    </div>
+    <div class="row kpis" id="revKpis"></div>
+    <div class="bars" id="revBars"><div class="muted" style="padding:8px 0">loading…</div></div>
+    <div class="note">The POC's headline join (<code>common_layer.channel_revenue_by_category</code>): store revenue replicates live from AlloyDB and climbs as you burst; web is the static BigQuery Iceberg baseline, net of returns.</div>
+  </div>
+
   <div class="card">
     <div class="row">
       <strong class="grow">Data burst</strong>
@@ -119,6 +146,11 @@
       <label class="ctl">rows/batch <input type="range" id="countRange" min="10" max="500" step="10" value="50"><b id="countVal">50</b></label>
       <label class="ctl">batches <input type="number" id="batchesInp" min="1" max="20" value="1"></label>
       <button id="burstBtn">Burst now</button>
+    </div>
+    <div class="row" style="margin-top:12px; gap:10px;">
+      <span class="muted" style="font-size:13px;">CDC demo (store_sales):</span>
+      <button id="updBtn" class="ghost">Update newest</button>
+      <button id="delBtn" class="ghost">Delete newest</button>
     </div>
     <div class="chart">
       <div class="muted spark-label">store_sales throughput · <b id="rate">—</b></div>
@@ -150,6 +182,15 @@
     <div class="note"><strong>BQ rows</strong> is the current row count (distinct primary key), so re-syncing a table won't inflate it. <strong>Lag</strong> is how old each table's newest row is, which reads high for tables nobody writes to since their last change was the backfill.</div>
     <div class="note">Turning a table on adds it to the publication and the stream. Datastream backfills it and creates the matching <code>alloydb_iceberg.public_&lt;table&gt;</code> table. New tables show up on their own (the page polls every 3s), or click Refresh.</div>
   </div>
+
+  <div class="card">
+    <div class="row">
+      <strong class="grow">BigQuery Iceberg (one-off load)</strong>
+      <span class="muted">static side of the join</span>
+    </div>
+    <div class="row kpis" id="webKpis"></div>
+    <div class="note">Loaded once into <code>bigquery_iceberg</code>, not replicated. <code>web_sales</code> and <code>web_returns</code> are the web channel that the revenue panel joins against the live AlloyDB store data.</div>
+  </div>
 </main>
 
 <script>
@@ -157,6 +198,7 @@ const $ = s => document.querySelector(s);
 let busy = false;            // pause polling while a mutation is in flight
 const fmt = n => n == null ? "—" : Number(n).toLocaleString();
 const lag = s => s == null ? "—" : (s < 0 ? "0s" : s < 60 ? s + "s" : Math.floor(s/60) + "m " + (s%60) + "s");
+const money = n => n == null ? "—" : "$" + Number(n).toLocaleString(undefined, {maximumFractionDigits: 0});
 
 async function api(path, method = "GET", body) {
   const r = await fetch(path, {
@@ -192,7 +234,9 @@ function renderTables(tables) {
         </label>
       </td>
       <td class="num" data-l="AlloyDB">${fmt(t.alloydb_rows)}</td>
-      <td class="num" data-l="BQ rows">${fmt(t.bq_rows)}</td>
+      <td class="num" data-l="BQ rows">${fmt(t.bq_rows)}${
+        (t.bq_appendlog != null && t.bq_appendlog !== t.bq_rows)
+          ? `<div class="sublog" title="raw append-only log rows (includes re-backfills + CDC versions)">${fmt(t.bq_appendlog)} log</div>` : ""}</td>
       <td class="num" data-l="Lag">${lag(t.lag_seconds)}</td>`;
     tr.querySelector("input").addEventListener("change", onToggleTable);
     tb.appendChild(tr);
@@ -219,6 +263,54 @@ $("#autoToggle").addEventListener("change", async e => {
   finally { e.target.disabled = false; busy = false; refresh(); }
 });
 
+// --- revenue panel (the headline cross-source join) ------------------------
+function renderRevenue(rows) {
+  const bars = $("#revBars"), kpis = $("#revKpis");
+  if (!rows || !rows.length) { bars.innerHTML = '<div class="muted" style="padding:8px 0">no data yet</div>'; kpis.innerHTML = ""; return; }
+  const byCat = {};
+  let storeTot = 0, webTot = 0, max = 0;
+  for (const r of rows) {
+    (byCat[r.i_category] ??= {})[r.channel] = r.net_revenue;
+    if (r.channel === "store") storeTot += r.net_revenue; else webTot += r.net_revenue;
+    max = Math.max(max, r.net_revenue);
+  }
+  kpis.innerHTML =
+    `<div class="kpi store"><div class="v">${money(storeTot)}</div><div class="l">store net (AlloyDB, live)</div></div>
+     <div class="kpi web"><div class="v">${money(webTot)}</div><div class="l">web net (Iceberg, static)</div></div>`;
+  const w = v => max ? Math.max(2, (v / max) * 100) : 2;
+  bars.innerHTML = Object.keys(byCat).sort().map(cat => {
+    const s = byCat[cat].store || 0, web = byCat[cat].web || 0;
+    return `<div class="barrow"><div class="cat">${cat}</div>
+      <div class="bseg"><span class="tag">store</span><div class="track"><div class="bar store" style="width:${w(s)}%"></div></div><span class="val">${money(s)}</span></div>
+      <div class="bseg"><span class="tag">web</span><div class="track"><div class="bar web" style="width:${w(web)}%"></div></div><span class="val">${money(web)}</span></div>
+    </div>`;
+  }).join("");
+}
+
+async function refreshRevenue() {
+  try { renderRevenue((await api("/api/revenue")).rows); } catch (e) {}
+}
+
+function renderWeb(src) {
+  if (!src) return;
+  $("#webKpis").innerHTML =
+    `<div class="kpi"><div class="v">${fmt(src.web_sales)}</div><div class="l">web_sales rows</div></div>
+     <div class="kpi"><div class="v">${fmt(src.web_returns)}</div><div class="l">web_returns rows</div></div>`;
+}
+
+async function mutate(action, btn, label) {
+  btn.disabled = true; const t = btn.textContent; btn.textContent = "…";
+  try {
+    const r = await api("/api/cdc/mutate", "POST", { action });
+    btn.textContent = "✓ " + (r.ss_sale_sk != null ? `#${r.ss_sale_sk}` : "done");
+    await refresh(true); refreshRevenue();
+    setTimeout(() => { btn.textContent = label; }, 2500);
+  } catch (err) { alert(err.message); btn.textContent = label; }
+  finally { btn.disabled = false; }
+}
+$("#updBtn").addEventListener("click", e => mutate("update", e.target, "Update newest"));
+$("#delBtn").addEventListener("click", e => mutate("delete", e.target, "Delete newest"));
+
 $("#countRange").addEventListener("input", e => { $("#countVal").textContent = e.target.value; });
 
 $("#burstBtn").addEventListener("click", async () => {
@@ -229,6 +321,7 @@ $("#burstBtn").addEventListener("click", async () => {
     const r = await api("/api/burst/once", "POST", { count, batches });
     b.textContent = `✓ +${(r.inserted ?? 0).toLocaleString()} rows`;
     await refresh(true);                    // force a repaint right after the burst
+    refreshRevenue();
     setTimeout(() => { b.textContent = "Burst now"; }, 2500);
   } catch (err) {
     alert(err.message); b.textContent = "Burst now";
@@ -292,6 +385,7 @@ async function refresh(force) {
     $("#freshness").textContent = s.freshness_seconds == null ? "" : `fresh ${lag(s.freshness_seconds)}`;
     renderHealth(s);
     renderTables(s.tables);
+    renderWeb(s.web_sources);
     const ss = (s.tables || []).find(t => t.name === "store_sales");
     if (ss) { pushSample(ss.alloydb_rows); drawSpark(); }
   } catch (err) {
@@ -299,8 +393,15 @@ async function refresh(force) {
   }
 }
 
-refresh();
-setInterval(refresh, 3000);
+let tick = 0;
+async function loop() {
+  await refresh();
+  if (tick % 3 === 0) refreshRevenue();   // heavier BQ join — every ~9s
+  tick++;
+}
+loop();
+refreshRevenue();
+setInterval(loop, 3000);
 </script>
 </body>
 </html>

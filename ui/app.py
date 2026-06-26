@@ -172,12 +172,12 @@ def set_synced(table, on, valid_tables):
 
 # --- BigQuery stats --------------------------------------------------------
 def bq_stats(table, pk_cols):
-    """(current_rows, lag_seconds) for alloydb_iceberg.public_<table>; (None, None) if absent.
+    """(current_rows, append_log_rows, lag_seconds); (None, None, None) if the table is absent.
 
     The Iceberg table is an append-only log (a row per CDC change AND per
-    re-backfill), so COUNT(*) inflates. We count current-state rows = distinct
-    primary key. Lag = age of the newest replicated row (source_timestamp is
-    INT64 epoch-millis). No PK -> fall back to raw append-log COUNT(*).
+    re-backfill). current_rows = distinct primary key (matches AlloyDB);
+    append_log_rows = raw COUNT(*). Lag = age of the newest replicated row
+    (source_timestamp is INT64 epoch-millis). No PK -> current falls back to raw.
     """
     fq = f"`{PROJECT}.{BQ_DATASET}.public_{table}`"
     if pk_cols:
@@ -186,16 +186,29 @@ def bq_stats(table, pk_cols):
     else:
         n_expr = "COUNT(*)"
     q = (
-        f"SELECT {n_expr} AS n, "
+        f"SELECT {n_expr} AS n, COUNT(*) AS raw, "
         f"TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), "
         f"TIMESTAMP_MILLIS(MAX(datastream_metadata.source_timestamp)), SECOND) AS lag "
         f"FROM {fq}"
     )
     try:
         row = next(iter(bq.query(q).result()))
-        return row["n"], row["lag"]
+        return row["n"], row["raw"], row["lag"]
     except Exception:
-        return None, None
+        return None, None, None
+
+
+def web_source_counts():
+    """Row counts for the statically-loaded BigQuery Iceberg side of the join."""
+    q = (
+        f"SELECT (SELECT COUNT(*) FROM `{PROJECT}.bigquery_iceberg.web_sales`)   AS web_sales, "
+        f"       (SELECT COUNT(*) FROM `{PROJECT}.bigquery_iceberg.web_returns`) AS web_returns"
+    )
+    try:
+        row = next(iter(bq.query(q).result()))
+        return {"web_sales": row["web_sales"], "web_returns": row["web_returns"]}
+    except Exception:
+        return {"web_sales": None, "web_returns": None}
 
 
 # --- Scheduler -------------------------------------------------------------
@@ -249,7 +262,7 @@ def status():
     tables, lags, errors = [], [], []
     for t in names:
         synced = t in included
-        bq_rows, lag = bq_stats(t, pks.get(t, []))  # (None, None) if BQ table absent
+        bq_rows, bq_appendlog, lag = bq_stats(t, pks.get(t, []))  # (None,...) if BQ table absent
         h = health.get(t, {})
         if synced and lag is not None:
             lags.append(lag)
@@ -261,6 +274,7 @@ def status():
             "in_publication": t in published,
             "alloydb_rows": counts[t],
             "bq_rows": bq_rows,
+            "bq_appendlog": bq_appendlog,
             "lag_seconds": lag,
             "backfill_state": h.get("backfill_state"),
             "error": h.get("error"),
@@ -271,7 +285,61 @@ def status():
         "scheduler_state": scheduler_state(),
         "freshness_seconds": min(lags) if lags else None,  # newest event across tables
         "errors": errors,
+        "web_sources": web_source_counts(),
     }
+
+
+@app.get("/api/revenue")
+def revenue():
+    """The headline cross-source join: store (AlloyDB live) vs web (Iceberg static)."""
+    q = (
+        "SELECT i_category, channel, line_items, units, "
+        "CAST(gross_revenue AS FLOAT64) AS gross_revenue, returns_units, "
+        "CAST(returns_amt AS FLOAT64) AS returns_amt, CAST(net_revenue AS FLOAT64) AS net_revenue "
+        f"FROM `{PROJECT}.common_layer.channel_revenue_by_category` "
+        "ORDER BY i_category, channel"
+    )
+    try:
+        rows = [dict(r) for r in bq.query(q).result()]
+    except Exception as e:
+        return {"rows": [], "error": str(e)}
+    return {"rows": rows}
+
+
+class Mutate(BaseModel):
+    action: str  # "update" | "delete"
+
+
+@app.post("/api/cdc/mutate")
+def cdc_mutate(body: Mutate):
+    """Demo full CDC: UPDATE or DELETE the newest store_sales row in AlloyDB.
+
+    The change flows through Datastream into the append-only log (a new version
+    or a DELETE marker), and the `store_sales_current` view dedups/drops it.
+    """
+    conn = db()
+    try:
+        with conn, conn.cursor() as cur:
+            if body.action == "update":
+                cur.execute(
+                    "UPDATE store_sales SET ss_net_paid = ROUND(ss_net_paid * 1.10, 2) "
+                    "WHERE ss_sale_sk = (SELECT MAX(ss_sale_sk) FROM store_sales) "
+                    "RETURNING ss_sale_sk, ss_net_paid"
+                )
+                r = cur.fetchone()
+                return {"ok": True, "action": "update", "ss_sale_sk": r[0] if r else None,
+                        "detail": f"bumped ss_sale_sk {r[0]} net_paid to {r[1]}" if r else "no rows"}
+            if body.action == "delete":
+                cur.execute(
+                    "DELETE FROM store_sales WHERE ss_sale_sk = "
+                    "(SELECT MAX(ss_sale_sk) FROM store_sales) RETURNING ss_sale_sk"
+                )
+                r = cur.fetchone()
+                return {"ok": True, "action": "delete", "ss_sale_sk": r[0] if r else None,
+                        "detail": f"deleted ss_sale_sk {r[0]}" if r else "no rows"}
+            raise HTTPException(400, "action must be update|delete")
+    finally:
+        conn.close()
 
 
 @app.post("/api/tables/{name}/sync")
