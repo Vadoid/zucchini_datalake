@@ -44,7 +44,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-cfg() { command -v jq >/dev/null 2>&1 && [[ -f "$CONFIG" ]] && jq -r --arg k "$1" '.[$k] // empty' "$CONFIG" 2>/dev/null || true; }
+cfg() {
+  [[ -f "$CONFIG" ]] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    jq -r --arg k "$1" '.[$k] // empty' "$CONFIG" 2>/dev/null || true
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c "import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ''))" "$CONFIG" "$1" 2>/dev/null || true
+  fi
+}
 
 # Resolve project/region: flag > terraform output > config.json.
 PROJECT="$PROJECT_FLAG"

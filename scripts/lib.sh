@@ -8,7 +8,14 @@ SQL_DIR="$ROOT/sql"
 CONFIG="${CONFIG:-$ROOT/config.json}"   # single source of truth
 
 # Read a key from config.json (empty if missing).
-cfg() { command -v jq >/dev/null 2>&1 && [[ -f "$CONFIG" ]] && jq -r --arg k "$1" '.[$k] // empty' "$CONFIG" 2>/dev/null || true; }
+cfg() {
+  [[ -f "$CONFIG" ]] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    jq -r --arg k "$1" '.[$k] // empty' "$CONFIG" 2>/dev/null || true
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c "import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ''))" "$CONFIG" "$1" 2>/dev/null || true
+  fi
+}
 
 # --- pretty output ---------------------------------------------------------
 c_blue='\033[1;34m'; c_grn='\033[1;32m'; c_yel='\033[1;33m'; c_red='\033[1;31m'; c_off='\033[0m'

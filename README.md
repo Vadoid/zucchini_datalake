@@ -44,11 +44,26 @@ Key design points:
 
 ## Prerequisites
 
-- Tools: `terraform`, `gcloud`, `bq`, `psql`, `jq` (`./deploy.sh doctor` checks them;
-  `--install-deps` installs missing ones via brew/apt).
-- Auth: `gcloud auth login` **and** `gcloud auth application-default login` (Terraform
-  uses ADC). `deploy.sh` preflight verifies both and the project.
-- A GCP project (existing, or set `create_project: true` + billing/org in config).
+- **Tools**: `terraform`, `gcloud`, `bq`, `psql`, `jq`.
+  - Check missing tools using `./deploy.sh doctor`.
+  - Auto-install missing packages using `./deploy.sh --install-deps`.
+  - **`jq` Note**: `deploy.sh` uses `jq` to manage configuration variables. If `jq` is missing, the script will temporarily fall back to using `python3` to parse `config.json` while running checks or auto-installing `jq`.
+  - **`terraform` Note**: Because `terraform` is not available in default package manager repositories, the auto-installer can fail to locate it. You can install it:
+    - **Locally (Recommended)**: Download and unzip it into `~/.local/bin` (which is typically in your `$PATH`):
+      ```bash
+      mkdir -p ~/.local/bin
+      curl -fsSL https://releases.hashicorp.com/terraform/1.9.0/terraform_1.9.0_linux_amd64.zip -o terraform.zip
+      unzip -o terraform.zip -d ~/.local/bin && rm terraform.zip
+      ```
+    - **System-wide via APT**: Add the HashiCorp APT repository and install:
+      ```bash
+      sudo apt-get update && sudo apt-get install -y gnupg software-properties-common wget
+      wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg >/dev/null
+      echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com \$(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+      sudo apt-get update && sudo apt-get install -y terraform
+      ```
+- **Auth**: `gcloud auth login` **and** `gcloud auth application-default login` (Terraform uses Application Default Credentials). `deploy.sh` preflight verifies both and checks the project.
+- **A GCP project**: Existing, or configure `create_project: true` along with billing/org information in `config.json`.
 
 ## Configure
 

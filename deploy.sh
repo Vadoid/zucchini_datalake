@@ -58,11 +58,48 @@ fi
 # Precedence per value: CLI flag > TF_VAR_* env > config.json > built-in default.
 # Override the config path with: --config PATH  or  CONFIG=PATH env.
 CONFIG="${CONFIG:-$ROOT/config.json}"
+INSTALL_DEPS=0
+IS_DOCTOR=0
 for ((i=1; i<=$#; i++)); do
   if [[ "${!i}" == "--config" ]]; then j=$((i+1)); CONFIG="${!j}"; fi
+  if [[ "${!i}" == "--install-deps" ]]; then export INSTALL_DEPS=1; INSTALL_DEPS=1; fi
+  if [[ "${!i}" == "doctor" ]]; then IS_DOCTOR=1; fi
 done
-command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required to read config.json"; exit 1; }
-cfg() { [[ -f "$CONFIG" ]] && jq -r --arg k "$1" '.[$k] // empty' "$CONFIG" 2>/dev/null || true; }
+
+# If jq is missing, handle based on installation option and command
+if ! command -v jq >/dev/null 2>&1; then
+  if [[ "$INSTALL_DEPS" == 1 ]]; then
+    echo "Installing jq (required to read config.json)..."
+    if command -v brew >/dev/null 2>&1; then
+      brew install jq
+    elif command -v apt-get >/dev/null 2>&1; then
+      sudo apt-get update && sudo apt-get install -y jq
+    else
+      echo "ERROR: jq is required, and no package manager (brew/apt) was found to install it." >&2
+      exit 1
+    fi
+  elif [[ "$IS_DOCTOR" == 1 ]]; then
+    # Let doctor command proceed; it will report missing jq
+    echo "Warning: jq is missing. Proceeding with doctor check..."
+  else
+    echo "ERROR: jq is required to read config.json." >&2
+    if command -v apt-get >/dev/null 2>&1; then
+      echo "Please install it manually (sudo apt-get install jq) or run: ./deploy.sh --install-deps" >&2
+    elif command -v brew >/dev/null 2>&1; then
+      echo "Please install it manually (brew install jq) or run: ./deploy.sh --install-deps" >&2
+    fi
+    exit 1
+  fi
+fi
+
+cfg() {
+  [[ -f "$CONFIG" ]] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    jq -r --arg k "$1" '.[$k] // empty' "$CONFIG" 2>/dev/null || true
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c "import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ''))" "$CONFIG" "$1" 2>/dev/null || true
+  fi
+}
 
 # --- defaults (TF_VAR_* env > config.json > literal) ------------------------
 PROJECT="${TF_VAR_project_id:-$(cfg project_id)}"
