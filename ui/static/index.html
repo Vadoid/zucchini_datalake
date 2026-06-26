@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sync Control Panel</title>
+<style>
+  :root {
+    --bg:#0f1419; --card:#1a212b; --line:#2b3543; --fg:#e6edf3; --mut:#8b98a8;
+    --on:#2ea043; --off:#6e7681; --accent:#388bfd; --warn:#d29922;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--fg);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  }
+  header { padding:20px 16px; border-bottom:1px solid var(--line); }
+  h1 { margin:0; font-size:20px; }
+  .sub { color:var(--mut); font-size:13px; margin-top:4px; }
+  main { max-width:960px; margin:0 auto; padding:16px; }
+  .card {
+    background:var(--card); border:1px solid var(--line); border-radius:10px;
+    padding:16px; margin-bottom:16px;
+  }
+  .row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .row + .row { margin-top:12px; }
+  .grow { flex:1 1 auto; }
+  .pill { font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--mut); }
+  .pill.run, .pill.on  { color:var(--on);  border-color:var(--on); }
+  .pill.paused, .pill.off { color:var(--warn); border-color:var(--warn); }
+  button {
+    background:var(--accent); color:#fff; border:0; border-radius:8px;
+    padding:9px 14px; font-size:14px; cursor:pointer; transition:.15s;
+  }
+  button.ghost {
+    background:transparent; border:1px solid var(--line); color:var(--mut);
+    font-size:13px; padding:7px 14px; border-radius:999px;
+    display:inline-flex; align-items:center; gap:7px;
+  }
+  button.ghost:hover { color:var(--fg); border-color:var(--accent); background:rgba(56,139,253,.10); }
+  button.ghost .ico { color:var(--accent); font-size:14px; line-height:1; }
+  button.ghost.spin .ico { animation:spin .6s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  button:disabled { opacity:.5; cursor:default; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--mut); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  th.num, td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .muted { color:var(--mut); }
+  /* descriptive prose — NOT flex (flex turns each word/<code> into a gapped item) */
+  .note { color:var(--mut); font-size:13px; line-height:1.55; margin-top:10px; }
+  .note + .note { margin-top:6px; }
+  code { background:rgba(255,255,255,.06); padding:1px 5px; border-radius:4px; font-size:12px; white-space:nowrap; }
+  /* toggle switch */
+  .sw { position:relative; display:inline-block; vertical-align:middle; width:46px; height:26px; flex:0 0 auto; }
+  .sw input { opacity:0; width:0; height:0; }
+  .slider {
+    position:absolute; inset:0; background:var(--off); border-radius:999px;
+    transition:.15s; cursor:pointer;
+  }
+  .slider::before {
+    content:""; position:absolute; height:20px; width:20px; left:3px; top:3px;
+    background:#fff; border-radius:50%; transition:.15s;
+  }
+  input:checked + .slider { background:var(--on); }
+  input:checked + .slider::before { transform:translateX(20px); }
+  input:disabled + .slider { opacity:.5; cursor:default; }
+  .badge { font-size:11px; color:var(--warn); margin-left:6px; }
+  @media (max-width:560px) {
+    thead { display:none; }
+    table, tbody, tr, td { display:block; width:100%; }
+    tr { border:1px solid var(--line); border-radius:8px; margin-bottom:10px; padding:6px 10px; }
+    td { border:0; padding:6px 4px; display:flex; justify-content:space-between; align-items:center; }
+    td.num { text-align:right; }
+    td::before { content:attr(data-l); color:var(--mut); font-size:12px; }
+    td.tname::before { content:""; }
+    td.tname { font-weight:600; font-size:16px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sync Control Panel</h1>
+  <div class="sub">AlloyDB → Datastream → BigQuery Iceberg · live every 3s</div>
+</header>
+<main>
+  <div class="card">
+    <div class="row">
+      <strong class="grow">Data burst</strong>
+      <span class="muted">auto-burst</span>
+      <span id="autoState" class="pill">…</span>
+      <label class="sw"><input type="checkbox" id="autoToggle"><span class="slider"></span></label>
+      <button id="burstBtn">Burst now</button>
+    </div>
+    <div class="note">Burst inserts a random batch of <code>store_sales</code> rows into AlloyDB. Auto-burst repeats every minute.</div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <strong class="grow">Table syncing</strong>
+      <button id="refreshBtn" class="ghost"><span class="ico">↻</span>Refresh</button>
+      <span class="muted">stream</span>
+      <span id="streamState" class="pill">…</span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Table</th><th>Sync</th>
+          <th class="num">AlloyDB rows</th>
+          <th class="num" title="Current row count in BigQuery, counted by distinct primary key. The Iceberg table only gets appended to, so counting distinct keys gives the current state, which matches AlloyDB.">BQ rows</th>
+          <th class="num" title="How old each table's newest row is (now minus its last change). A table nobody writes to climbs here, because its last change was the one-time backfill. A table getting fresh inserts stays near zero. The pipeline itself runs at about 0s freshness.">Lag</th>
+        </tr>
+      </thead>
+      <tbody id="rows"><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+    </table>
+    <div class="note"><strong>BQ rows</strong> is the current row count (distinct primary key), so re-syncing a table won't inflate it. <strong>Lag</strong> is how old each table's newest row is, which reads high for tables nobody writes to since their last change was the backfill.</div>
+    <div class="note">Turning a table on adds it to the publication and the stream. Datastream backfills it and creates the matching <code>alloydb_iceberg.public_&lt;table&gt;</code> table. New tables show up on their own (the page polls every 3s), or click Refresh.</div>
+  </div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let busy = false;            // pause polling while a mutation is in flight
+const fmt = n => n == null ? "—" : Number(n).toLocaleString();
+const lag = s => s == null ? "—" : (s < 0 ? "0s" : s < 60 ? s + "s" : Math.floor(s/60) + "m " + (s%60) + "s");
+
+async function api(path, method = "GET", body) {
+  const r = await fetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+function pill(el, state, goodWords) {
+  el.textContent = state;
+  el.className = "pill " + (goodWords.includes(state) ? "on" : "off");
+}
+
+function renderTables(tables) {
+  const tb = $("#rows");
+  tb.innerHTML = "";
+  if (!tables.length) { tb.innerHTML = '<tr><td colspan="5" class="muted">no public tables</td></tr>'; return; }
+  for (const t of tables) {
+    const tr = document.createElement("tr");
+    const pubBadge = (t.synced && !t.in_publication) ? '<span class="badge">not published</span>' : "";
+    tr.innerHTML = `
+      <td class="tname">${t.name}${pubBadge}</td>
+      <td data-l="Sync">
+        <label class="sw">
+          <input type="checkbox" ${t.synced ? "checked" : ""} data-table="${t.name}">
+          <span class="slider"></span>
+        </label>
+      </td>
+      <td class="num" data-l="AlloyDB">${fmt(t.alloydb_rows)}</td>
+      <td class="num" data-l="BQ rows">${fmt(t.bq_rows)}</td>
+      <td class="num" data-l="Lag">${lag(t.lag_seconds)}</td>`;
+    tr.querySelector("input").addEventListener("change", onToggleTable);
+    tb.appendChild(tr);
+  }
+}
+
+async function onToggleTable(e) {
+  const cb = e.target, name = cb.dataset.table, on = cb.checked;
+  busy = true; cb.disabled = true;
+  try {
+    await api(`/api/tables/${encodeURIComponent(name)}/sync`, "POST", { on });
+  } catch (err) {
+    alert(`Failed to ${on ? "enable" : "disable"} ${name}:\n${err.message}`);
+    cb.checked = !on;
+  } finally {
+    cb.disabled = false; busy = false; refresh();
+  }
+}
+
+$("#autoToggle").addEventListener("change", async e => {
+  busy = true; e.target.disabled = true;
+  try { await api("/api/burst/auto", "POST", { on: e.target.checked }); }
+  catch (err) { alert(err.message); e.target.checked = !e.target.checked; }
+  finally { e.target.disabled = false; busy = false; refresh(); }
+});
+
+$("#burstBtn").addEventListener("click", async () => {
+  const b = $("#burstBtn"); b.disabled = true; b.textContent = "Bursting…";
+  try {
+    const r = await api("/api/burst/once", "POST");
+    const m = (r.detail || "").match(/inserted (\d+)/);
+    b.textContent = m ? `✓ +${m[1]} rows` : "✓ done";
+    await refresh(true);                    // force a repaint right after the burst
+    setTimeout(() => { b.textContent = "Burst now"; }, 2500);
+  } catch (err) {
+    alert(err.message); b.textContent = "Burst now";
+  } finally { b.disabled = false; }
+});
+
+$("#refreshBtn").addEventListener("click", async () => {
+  const b = $("#refreshBtn"); b.disabled = true; b.classList.add("spin");
+  try { await refresh(true); } finally { b.disabled = false; b.classList.remove("spin"); }
+});
+
+async function refresh(force) {
+  if (busy && !force) return;
+  try {
+    const s = await api("/api/status");
+    pill($("#streamState"), s.stream_state, ["RUNNING"]);
+    const auto = s.scheduler_state === "ENABLED";
+    pill($("#autoState"), auto ? "ON" : "OFF", ["ON"]);
+    if (!$("#autoToggle").disabled) $("#autoToggle").checked = auto;
+    renderTables(s.tables);
+  } catch (err) {
+    $("#streamState").textContent = "error";
+  }
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

@@ -147,6 +147,38 @@ The headline result is `common_layer.channel_revenue_by_category`: store revenue
 (AlloyDB → Iceberg) vs web revenue (native Iceberg) per category, net of returns. With
 streaming on, `replicated`/`current_state` climb in near-real-time (`data_freshness=0`).
 
+## Sync Control Panel (web UI)
+
+A responsive Cloud Run web UI to drive the pipeline without the CLI:
+
+- **Per-table sync toggles**, flip each AlloyDB table's replication on/off. Turning
+  a table on adds it to the publication + the Datastream stream; Datastream backfills
+  and auto-creates `alloydb_iceberg.public_<table>`.
+- **Switch on new tables**, any new `public` table appears in the list automatically;
+  toggle it on to start feeding BigQuery Iceberg (no redeploy).
+- **Live stats**, per-table AlloyDB row count, BQ Iceberg row count, replication lag,
+  plus stream + scheduler state (polled every 3s).
+- **Data burst**, "Burst now" fires one mini-batch of `store_sales` rows; the
+  auto-burst toggle starts/stops the every-minute scheduler.
+
+```bash
+./deploy.sh ui            # build + deploy to Cloud Run, prints the URL (~2-3 min first time)
+./deploy.sh ui url        # print the URL again
+./deploy.sh ui delete     # remove the Cloud Run service
+```
+
+Requires the pipeline already deployed (`./deploy.sh`). The UI's runtime SA + IAM
+live in `terraform/ui.tf` and are created during a normal apply. The stream's
+`include_objects` is `lifecycle.ignore_changes`, so live toggles survive the next
+`terraform apply` (a full `./deploy.sh` re-run resets the publication to its 5-table
+seed via `sql/03`).
+
+> **Access:** the altostrat org enforces `iam.allowedPolicyMemberDomains`, which
+> rejects a public `allUsers` binding, so the service is **IAM-gated**. `deploy.sh ui`
+> grants the deploying user `run.invoker` and prints a proxy command; open the panel
+> locally with `gcloud run services proxy datalake-ui --region <region>` then browse
+> `http://localhost:8080`. To share it, grant other users `run.invoker` on the service.
+
 ## Teardown
 
 ```bash
@@ -166,8 +198,9 @@ deploy.sh / destroy.sh   lifecycle entrypoints (config.json -> tfvars -> apply -
 config.json              single source of truth (gitignored; copy from config.example.json)
 terraform/               all infra (AlloyDB, VPC+PSC, Datastream, BigQuery, GCS, function, scheduler)
 function/                gen2 Cloud Function, mini-batch streamer (psycopg2)
+ui/                       Sync Control Panel: FastAPI + responsive page, deployed to Cloud Run
 sql/                     schema, seed, CDC, Iceberg load, common_layer views, validation
-scripts/                 lib.sh helpers, 05_views_demo.sh, stream.sh
+scripts/                 lib.sh helpers, 05_views_demo.sh, stream.sh, ui.sh
 ```
 
 ## Notes / gotchas baked in

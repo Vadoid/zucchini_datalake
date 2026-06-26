@@ -81,6 +81,9 @@ if [[ "$DELETE_PROJECT" == 1 ]]; then
 fi
 
 # --- graceful teardown via terraform ---------------------------------------
+say "delete the Sync Control Panel Cloud Run service (ignore if absent)"
+gcloud run services delete datalake-ui --region="$REGION" --project="$PROJECT" --quiet 2>/dev/null || true
+
 say "pause scheduler (ignore if absent)"
 gcloud scheduler jobs pause datalake-stream-tick --location="$REGION" --project="$PROJECT" 2>/dev/null || true
 

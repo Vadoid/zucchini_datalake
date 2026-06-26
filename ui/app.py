@@ -1,0 +1,273 @@
+"""Sync Control Panel — FastAPI backend for the AlloyDB -> Datastream -> BQ Iceberg POC.
+
+Runs on Cloud Run (service account `datalake-ui`). Reaches AlloyDB over the
+serverless VPC connector (private IP) and drives the pipeline via GCP APIs:
+
+  * Datastream  — read/edit the stream's `include_objects` (per-table sync on/off,
+                  and switching on brand-new tables).
+  * Scheduler   — burst now (run_job) / auto-burst on-off (resume/pause_job).
+  * BigQuery    — per-table Iceberg row counts + replication lag.
+  * AlloyDB     — list public tables, row counts, ALTER PUBLICATION.
+
+A table feeds BQ Iceberg iff it is BOTH in publication `datalake_pub` AND in the
+stream's `include_objects`. "Turn on" therefore = ADD to publication + ADD to the
+stream object list (Datastream auto-creates `alloydb_iceberg.public_<t>` and
+backfills). "Turn off" = remove from the stream object list (existing rows stay).
+"""
+import os
+import urllib.request
+
+import psycopg2
+import google.auth.transport.requests
+import google.oauth2.id_token
+from psycopg2 import sql as pgsql
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from google.cloud import bigquery, datastream_v1, scheduler_v1
+from google.protobuf import field_mask_pb2
+
+# --- config (mirrors terraform/function.tf env) ----------------------------
+PROJECT = os.environ["PROJECT"]
+REGION = os.environ["REGION"]
+STREAM_ID = os.environ.get("STREAM_ID", "alloydb-to-iceberg")
+SCHEDULER_JOB = os.environ.get("SCHEDULER_JOB", "datalake-stream-tick")
+BQ_DATASET = os.environ.get("BQ_DATASET", "alloydb_iceberg")
+PUBLICATION = os.environ.get("PUBLICATION", "datalake_pub")
+FUNCTION_URI = os.environ["FUNCTION_URI"]
+
+DB_HOST = os.environ["ALLOYDB_HOST"]
+DB_NAME = os.environ.get("ALLOYDB_DB", "tpcds")
+DB_USER = os.environ.get("ALLOYDB_USER", "postgres")
+DB_PASSWORD = os.environ["ALLOYDB_PASSWORD"]
+
+HERE = os.path.dirname(__file__)
+
+ds = datastream_v1.DatastreamClient()
+sched = scheduler_v1.CloudSchedulerClient()
+bq = bigquery.Client(project=PROJECT)
+
+STREAM_NAME = ds.stream_path(PROJECT, REGION, STREAM_ID)
+JOB_NAME = sched.job_path(PROJECT, REGION, SCHEDULER_JOB)
+
+app = FastAPI(title="Sync Control Panel")
+
+
+# --- AlloyDB ---------------------------------------------------------------
+def db():
+    return psycopg2.connect(
+        host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD,
+        port=5432, connect_timeout=10,
+    )
+
+
+def alloydb_tables():
+    """Public base tables with live row counts and publication membership."""
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema='public' AND table_type='BASE TABLE' "
+            "ORDER BY table_name"
+        )
+        names = [r[0] for r in cur.fetchall()]
+
+        cur.execute(
+            "SELECT tablename FROM pg_publication_tables WHERE pubname=%s",
+            (PUBLICATION,),
+        )
+        published = {r[0] for r in cur.fetchall()}
+
+        # Primary-key columns per table, to count current-state rows in BQ
+        # (the append-only log holds a row per change + per re-backfill).
+        cur.execute(
+            "SELECT tc.table_name, kcu.column_name "
+            "FROM information_schema.table_constraints tc "
+            "JOIN information_schema.key_column_usage kcu "
+            "  ON tc.constraint_name=kcu.constraint_name "
+            " AND tc.table_schema=kcu.table_schema "
+            "WHERE tc.constraint_type='PRIMARY KEY' AND tc.table_schema='public' "
+            "ORDER BY tc.table_name, kcu.ordinal_position"
+        )
+        pks = {}
+        for tbl, col in cur.fetchall():
+            pks.setdefault(tbl, []).append(col)
+
+        counts = {}
+        for t in names:
+            cur.execute(pgsql.SQL("SELECT count(*) FROM public.{}").format(pgsql.Identifier(t)))
+            counts[t] = cur.fetchone()[0]
+    return names, published, counts, pks
+
+
+def publication_add(table):
+    # Idempotent: a table already in the publication raises DuplicateObject (42710).
+    conn = db()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                pgsql.SQL("ALTER PUBLICATION {} ADD TABLE public.{}").format(
+                    pgsql.Identifier(PUBLICATION), pgsql.Identifier(table)
+                )
+            )
+    except psycopg2.errors.DuplicateObject:
+        pass
+    finally:
+        conn.close()
+
+
+# --- Datastream include_objects -------------------------------------------
+def _included_set(stream):
+    inc = stream.source_config.postgresql_source_config.include_objects
+    out = set()
+    for schema in inc.postgresql_schemas:
+        for tbl in schema.postgresql_tables:
+            out.add(tbl.table)
+    return out
+
+
+def stream_status():
+    stream = ds.get_stream(name=STREAM_NAME)
+    state = datastream_v1.Stream.State(stream.state).name
+    return _included_set(stream), state
+
+
+def set_synced(table, on, valid_tables):
+    if table not in valid_tables:
+        raise HTTPException(404, f"unknown table {table!r}")
+
+    stream = ds.get_stream(name=STREAM_NAME)
+    wanted = set(_included_set(stream))  # currently-included `public` tables
+    if on:
+        publication_add(table)  # must be published before Datastream can read it
+        wanted.add(table)
+    else:
+        wanted.discard(table)
+
+    # Rebuild include_objects from typed proto-plus messages (the repeated fields
+    # are list-like: assign, not .add()). Single `public` schema for this POC.
+    stream.source_config.postgresql_source_config.include_objects = (
+        datastream_v1.PostgresqlRdbms(
+            postgresql_schemas=[
+                datastream_v1.PostgresqlSchema(
+                    schema="public",
+                    postgresql_tables=[
+                        datastream_v1.PostgresqlTable(table=t) for t in sorted(wanted)
+                    ],
+                )
+            ]
+        )
+    )
+
+    ds.update_stream(
+        stream=stream,
+        update_mask=field_mask_pb2.FieldMask(
+            paths=["source_config.postgresql_source_config.include_objects"]
+        ),
+    ).result()
+
+
+# --- BigQuery stats --------------------------------------------------------
+def bq_stats(table, pk_cols):
+    """(current_rows, lag_seconds) for alloydb_iceberg.public_<table>; (None, None) if absent.
+
+    The Iceberg table is an append-only log (a row per CDC change AND per
+    re-backfill), so COUNT(*) inflates. We count current-state rows = distinct
+    primary key. Lag = age of the newest replicated row (source_timestamp is
+    INT64 epoch-millis). No PK -> fall back to raw append-log COUNT(*).
+    """
+    fq = f"`{PROJECT}.{BQ_DATASET}.public_{table}`"
+    if pk_cols:
+        key = "TO_JSON_STRING(STRUCT(" + ", ".join(f"`{c}`" for c in pk_cols) + "))"
+        n_expr = f"COUNT(DISTINCT {key})"
+    else:
+        n_expr = "COUNT(*)"
+    q = (
+        f"SELECT {n_expr} AS n, "
+        f"TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), "
+        f"TIMESTAMP_MILLIS(MAX(datastream_metadata.source_timestamp)), SECOND) AS lag "
+        f"FROM {fq}"
+    )
+    try:
+        row = next(iter(bq.query(q).result()))
+        return row["n"], row["lag"]
+    except Exception:
+        return None, None
+
+
+# --- Scheduler -------------------------------------------------------------
+def scheduler_state():
+    job = sched.get_job(name=JOB_NAME)
+    return scheduler_v1.Job.State(job.state).name
+
+
+# --- API -------------------------------------------------------------------
+class Toggle(BaseModel):
+    on: bool
+
+
+@app.get("/api/status")
+def status():
+    names, published, counts, pks = alloydb_tables()
+    included, stream_state = stream_status()
+    tables = []
+    for t in names:
+        synced = t in included
+        bq_rows, lag = bq_stats(t, pks.get(t, []))  # (None, None) if BQ table absent
+        tables.append({
+            "name": t,
+            "synced": synced,
+            "in_publication": t in published,
+            "alloydb_rows": counts[t],
+            "bq_rows": bq_rows,
+            "lag_seconds": lag,
+        })
+    return {
+        "tables": tables,
+        "stream_state": stream_state,
+        "scheduler_state": scheduler_state(),
+    }
+
+
+@app.post("/api/tables/{name}/sync")
+def sync(name: str, body: Toggle):
+    names, _, _, _ = alloydb_tables()
+    set_synced(name, body.on, set(names))
+    return {"name": name, "synced": body.on}
+
+
+@app.post("/api/burst/once")
+def burst_once():
+    # Invoke the streamer function directly (one batch now), independent of the
+    # scheduler: Scheduler's RunJob API requires the job be ENABLED, which would
+    # make "burst now" fail whenever auto-burst is off.
+    authreq = google.auth.transport.requests.Request()
+    token = google.oauth2.id_token.fetch_id_token(authreq, FUNCTION_URI)
+    req = urllib.request.Request(
+        FUNCTION_URI, method="POST", data=b"{}",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return {"ok": True, "detail": resp.read().decode("utf-8", "replace")[:200]}
+
+
+@app.post("/api/burst/auto")
+def burst_auto(body: Toggle):
+    if body.on:
+        sched.resume_job(name=JOB_NAME)
+    else:
+        sched.pause_job(name=JOB_NAME)
+    return {"auto": body.on}
+
+
+@app.get("/")
+def index():
+    # no-store so a redeploy is never masked by a cached page.
+    return FileResponse(
+        os.path.join(HERE, "static", "index.html"),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="static")

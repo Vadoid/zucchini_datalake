@@ -116,4 +116,12 @@ resource "google_datastream_stream" "alloydb_to_iceberg" {
     google_storage_bucket_iam_member.biglake_sa,
     google_bigquery_dataset.alloydb_iceberg,
   ]
+
+  # The Sync Control Panel (Cloud Run UI) edits include_objects live to toggle
+  # per-table sync and switch on new tables. Without this, the next apply would
+  # revert the stream to the hardcoded 5-table seed list above. The list here is
+  # only the initial seed; runtime membership is owned by the UI thereafter.
+  lifecycle {
+    ignore_changes = [source_config[0].postgresql_source_config[0].include_objects]
+  }
 }

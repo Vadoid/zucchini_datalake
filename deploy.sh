@@ -14,6 +14,7 @@
 #   demo         views + live streaming demo only
 #   doctor       check required tools (terraform/gcloud/bq/psql/jq); print fixes
 #   stream X     control streaming: X = start|stop|once|status
+#   ui X         sync control panel (Cloud Run): X = deploy|url|delete
 #   plan         terraform plan
 #   output       show terraform outputs
 #   destroy      tear everything down
@@ -139,6 +140,7 @@ while [[ $# -gt 0 ]]; do
     all|demo|plan|output|destroy|doctor)
                         CMD="$1"; shift;;
     stream)             CMD="stream"; STREAM_ACTION="${2:-status}"; shift 2 || shift;;
+    ui)                 CMD="ui"; UI_ACTION="${2:-deploy}"; shift 2 || shift;;
     *) echo "unknown arg: $1" >&2; exit 1;;
   esac
 done
@@ -382,6 +384,7 @@ case "$CMD" in
 
   demo)    bash "$SCRIPTS/05_views_demo.sh" "$ITERS" "$GAP";;
   stream)  bash "$SCRIPTS/stream.sh" "${STREAM_ACTION:-status}";;
+  ui)      bash "$SCRIPTS/ui.sh" "${UI_ACTION:-deploy}";;
   plan)    TF init -input=false >/dev/null; TF plan;;
   output)  TF output;;
   destroy) bash "$ROOT/destroy.sh";;
