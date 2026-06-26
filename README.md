@@ -28,6 +28,11 @@ flowchart LR
   end
 ```
 
+The AlloyDB source database is **`tpcds`** (Postgres user `postgres`), holding a TPC-DS
+subset: the fact table `store_sales` plus the dimensions `customer`, `item`, `date_dim`,
+and `store`. The Cloud Function appends rows to `store_sales`; the Sync Control Panel can
+switch any of these (or new tables) on/off for replication.
+
 Key design points:
 
 - **Datastream → Iceberg is append-only.** The `alloydb_iceberg.public_*` tables are an
