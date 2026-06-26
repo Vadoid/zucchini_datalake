@@ -3,6 +3,7 @@
 
 # local agent/tooling
 .claude/
+CLAUDE.md
 
 # secrets / local config (use config.example.json as the template)
 config.json
