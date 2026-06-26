@@ -14,7 +14,9 @@ stream's `include_objects`. "Turn on" therefore = ADD to publication + ADD to th
 stream object list (Datastream auto-creates `alloydb_iceberg.public_<t>` and
 backfills). "Turn off" = remove from the stream object list (existing rows stay).
 """
+import json
 import os
+import re
 import urllib.request
 
 import psycopg2
@@ -202,6 +204,38 @@ def scheduler_state():
     return scheduler_v1.Job.State(job.state).name
 
 
+# --- Stream health ---------------------------------------------------------
+def stream_objects_health():
+    """table -> {backfill_state, error} from Datastream stream objects (best-effort)."""
+    out = {}
+    try:
+        for obj in ds.list_stream_objects(parent=STREAM_NAME):
+            tbl = obj.source_object.postgresql_identifier.table
+            if not tbl:
+                continue
+            bf = obj.backfill_job
+            state = datastream_v1.BackfillJob.State(bf.state).name if (bf and bf.state) else None
+            errs = list(getattr(bf, "errors", []) or []) + list(getattr(obj, "errors", []) or [])
+            out[tbl] = {"backfill_state": state, "error": (errs[0].message if errs else None)}
+    except Exception:
+        pass
+    return out
+
+
+# --- Function invocation (burst) -------------------------------------------
+def invoke_function(count=None):
+    """POST the streamer function with an OIDC token; optional row count override."""
+    authreq = google.auth.transport.requests.Request()
+    token = google.oauth2.id_token.fetch_id_token(authreq, FUNCTION_URI)
+    payload = json.dumps({"count": int(count)} if count else {}).encode()
+    req = urllib.request.Request(
+        FUNCTION_URI, method="POST", data=payload,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        return resp.read().decode("utf-8", "replace")[:200]
+
+
 # --- API -------------------------------------------------------------------
 class Toggle(BaseModel):
     on: bool
@@ -211,10 +245,16 @@ class Toggle(BaseModel):
 def status():
     names, published, counts, pks = alloydb_tables()
     included, stream_state = stream_status()
-    tables = []
+    health = stream_objects_health()
+    tables, lags, errors = [], [], []
     for t in names:
         synced = t in included
         bq_rows, lag = bq_stats(t, pks.get(t, []))  # (None, None) if BQ table absent
+        h = health.get(t, {})
+        if synced and lag is not None:
+            lags.append(lag)
+        if h.get("error"):
+            errors.append({"table": t, "message": h["error"]})
         tables.append({
             "name": t,
             "synced": synced,
@@ -222,11 +262,15 @@ def status():
             "alloydb_rows": counts[t],
             "bq_rows": bq_rows,
             "lag_seconds": lag,
+            "backfill_state": h.get("backfill_state"),
+            "error": h.get("error"),
         })
     return {
         "tables": tables,
         "stream_state": stream_state,
         "scheduler_state": scheduler_state(),
+        "freshness_seconds": min(lags) if lags else None,  # newest event across tables
+        "errors": errors,
     }
 
 
@@ -237,19 +281,24 @@ def sync(name: str, body: Toggle):
     return {"name": name, "synced": body.on}
 
 
+class Burst(BaseModel):
+    count: int | None = None   # rows per batch; None -> function's random 20-60
+    batches: int = 1           # how many batches to fire
+
+
 @app.post("/api/burst/once")
-def burst_once():
-    # Invoke the streamer function directly (one batch now), independent of the
-    # scheduler: Scheduler's RunJob API requires the job be ENABLED, which would
-    # make "burst now" fail whenever auto-burst is off.
-    authreq = google.auth.transport.requests.Request()
-    token = google.oauth2.id_token.fetch_id_token(authreq, FUNCTION_URI)
-    req = urllib.request.Request(
-        FUNCTION_URI, method="POST", data=b"{}",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return {"ok": True, "detail": resp.read().decode("utf-8", "replace")[:200]}
+def burst_once(body: Burst = Burst()):
+    # Invoke the streamer function directly, independent of the scheduler:
+    # Scheduler's RunJob API requires the job be ENABLED, so it would fail
+    # whenever auto-burst is off.
+    batches = max(1, min(20, body.batches))
+    total, detail = 0, ""
+    for _ in range(batches):
+        detail = invoke_function(body.count)
+        m = re.search(r"inserted (\d+)", detail)
+        if m:
+            total += int(m.group(1))
+    return {"ok": True, "inserted": total, "batches": batches, "detail": detail}
 
 
 @app.post("/api/burst/auto")

@@ -51,6 +51,19 @@
   .note { color:var(--mut); font-size:13px; line-height:1.55; margin-top:10px; }
   .note + .note { margin-top:6px; }
   code { background:rgba(255,255,255,.06); padding:1px 5px; border-radius:4px; font-size:12px; white-space:nowrap; }
+  /* burst controls + sparkline */
+  .ctl { display:inline-flex; align-items:center; gap:8px; color:var(--mut); font-size:13px; }
+  .ctl input[type=range] { accent-color:var(--accent); cursor:pointer; }
+  .ctl input[type=number] { width:58px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:5px 7px; font-size:13px; }
+  .ctl b { color:var(--fg); font-variant-numeric:tabular-nums; min-width:30px; }
+  .spark { width:100%; height:46px; display:block; }
+  .spark-label { font-size:12px; margin-bottom:4px; }
+  /* health banner + per-row badges */
+  .banner { margin-bottom:16px; padding:10px 14px; border-radius:8px; font-size:13px;
+            border:1px solid var(--warn); color:var(--warn); background:rgba(210,153,34,.09); }
+  .banner.err { border-color:#f85149; color:#ff9b9b; background:rgba(248,81,73,.10); }
+  .bkf { font-size:11px; color:var(--accent); margin-left:8px; }
+  .err-badge { font-size:11px; color:#ff9b9b; margin-left:8px; }
   /* toggle switch */
   .sw { position:relative; display:inline-block; vertical-align:middle; width:46px; height:26px; flex:0 0 auto; }
   .sw input { opacity:0; width:0; height:0; }
@@ -84,21 +97,32 @@
   <div class="sub">AlloyDB → Datastream → BigQuery Iceberg · live every 3s</div>
 </header>
 <main>
+  <div id="healthBanner" class="banner" hidden></div>
+
   <div class="card">
     <div class="row">
       <strong class="grow">Data burst</strong>
       <span class="muted">auto-burst</span>
       <span id="autoState" class="pill">…</span>
       <label class="sw"><input type="checkbox" id="autoToggle"><span class="slider"></span></label>
+    </div>
+    <div class="row" style="margin-top:14px; gap:18px;">
+      <label class="ctl">rows/batch <input type="range" id="countRange" min="10" max="500" step="10" value="50"><b id="countVal">50</b></label>
+      <label class="ctl">batches <input type="number" id="batchesInp" min="1" max="20" value="1"></label>
       <button id="burstBtn">Burst now</button>
     </div>
-    <div class="note">Burst inserts a random batch of <code>store_sales</code> rows into AlloyDB. Auto-burst repeats every minute.</div>
+    <div style="margin-top:16px;">
+      <div class="muted spark-label">store_sales throughput · <b id="rate">—</b></div>
+      <svg id="spark" class="spark" viewBox="0 0 300 46" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="note">Burst inserts <code>store_sales</code> rows into AlloyDB. The slider sets batch size; run up to 20 batches at once. Auto-burst fires one batch a minute.</div>
   </div>
 
   <div class="card">
     <div class="row">
       <strong class="grow">Table syncing</strong>
       <button id="refreshBtn" class="ghost"><span class="ico">↻</span>Refresh</button>
+      <span id="freshness" class="muted"></span>
       <span class="muted">stream</span>
       <span id="streamState" class="pill">…</span>
     </div>
@@ -146,8 +170,11 @@ function renderTables(tables) {
   for (const t of tables) {
     const tr = document.createElement("tr");
     const pubBadge = (t.synced && !t.in_publication) ? '<span class="badge">not published</span>' : "";
+    const backfilling = ["PENDING", "ACTIVE", "NOT_STARTED"].includes(t.backfill_state);
+    const bkf = (t.synced && backfilling) ? '<span class="bkf">backfilling…</span>' : "";
+    const errBadge = t.error ? `<span class="err-badge" title="${t.error.replace(/"/g, "&quot;")}">⚠ error</span>` : "";
     tr.innerHTML = `
-      <td class="tname">${t.name}${pubBadge}</td>
+      <td class="tname">${t.name}${pubBadge}${bkf}${errBadge}</td>
       <td data-l="Sync">
         <label class="sw">
           <input type="checkbox" ${t.synced ? "checked" : ""} data-table="${t.name}">
@@ -182,12 +209,15 @@ $("#autoToggle").addEventListener("change", async e => {
   finally { e.target.disabled = false; busy = false; refresh(); }
 });
 
+$("#countRange").addEventListener("input", e => { $("#countVal").textContent = e.target.value; });
+
 $("#burstBtn").addEventListener("click", async () => {
   const b = $("#burstBtn"); b.disabled = true; b.textContent = "Bursting…";
+  const count = +$("#countRange").value;
+  const batches = Math.max(1, Math.min(20, +$("#batchesInp").value || 1));
   try {
-    const r = await api("/api/burst/once", "POST");
-    const m = (r.detail || "").match(/inserted (\d+)/);
-    b.textContent = m ? `✓ +${m[1]} rows` : "✓ done";
+    const r = await api("/api/burst/once", "POST", { count, batches });
+    b.textContent = `✓ +${(r.inserted ?? 0).toLocaleString()} rows`;
     await refresh(true);                    // force a repaint right after the burst
     setTimeout(() => { b.textContent = "Burst now"; }, 2500);
   } catch (err) {
@@ -200,6 +230,46 @@ $("#refreshBtn").addEventListener("click", async () => {
   try { await refresh(true); } finally { b.disabled = false; b.classList.remove("spin"); }
 });
 
+// --- throughput sparkline (store_sales rows over time) ---------------------
+const hist = [];                          // {t: ms, rows}
+function pushSample(rows) {
+  if (rows == null) return;
+  const now = Date.now();
+  if (hist.length && hist[hist.length - 1].rows === rows && now - hist[hist.length - 1].t < 2500) return;
+  hist.push({ t: now, rows });
+  while (hist.length > 60) hist.shift();
+}
+function drawSpark() {
+  const svg = $("#spark"), W = 300, H = 46;
+  if (hist.length < 2) { svg.innerHTML = '<text x="6" y="26" fill="#8b98a8" font-size="11">collecting…</text>'; $("#rate").textContent = "—"; return; }
+  const xs = hist.map(h => h.t), ys = hist.map(h => h.rows);
+  const t0 = xs[0], t1 = xs[xs.length - 1] || t0 + 1;
+  const lo = Math.min(...ys), hi = Math.max(...ys), span = (hi - lo) || 1;
+  const px = t => 2 + (W - 4) * (t - t0) / ((t1 - t0) || 1);
+  const py = v => H - 3 - (H - 6) * (v - lo) / span;
+  const pts = hist.map(h => `${px(h.t).toFixed(1)},${py(h.rows).toFixed(1)}`).join(" ");
+  svg.innerHTML =
+    `<polyline fill="none" stroke="#388bfd" stroke-width="2" points="${pts}"/>` +
+    `<polygon fill="rgba(56,139,253,.12)" points="2,${H} ${pts} ${W-2},${H}"/>`;
+  // rows/min from the overall window
+  const dmin = (xs[xs.length - 1] - t0) / 60000;
+  const rate = dmin > 0 ? Math.round((ys[ys.length - 1] - ys[0]) / dmin) : 0;
+  $("#rate").textContent = `${rate.toLocaleString()} rows/min`;
+}
+
+function renderHealth(s) {
+  const errs = s.errors || [];
+  const bad = s.stream_state !== "RUNNING" || errs.length;
+  const el = $("#healthBanner");
+  if (!bad) { el.hidden = true; return; }
+  el.hidden = false;
+  el.className = "banner" + (errs.length ? " err" : "");
+  el.textContent = errs.length
+    ? `Datastream errors: ${errs.map(e => `${e.table} — ${e.message}`).join(" · ")}`
+    : `Stream state: ${s.stream_state}`;
+  $("#freshness").textContent = "";
+}
+
 async function refresh(force) {
   if (busy && !force) return;
   try {
@@ -208,7 +278,11 @@ async function refresh(force) {
     const auto = s.scheduler_state === "ENABLED";
     pill($("#autoState"), auto ? "ON" : "OFF", ["ON"]);
     if (!$("#autoToggle").disabled) $("#autoToggle").checked = auto;
+    $("#freshness").textContent = s.freshness_seconds == null ? "" : `fresh ${lag(s.freshness_seconds)}`;
+    renderHealth(s);
     renderTables(s.tables);
+    const ss = (s.tables || []).find(t => t.name === "store_sales");
+    if (ss) { pushSample(ss.alloydb_rows); drawSpark(); }
   } catch (err) {
     $("#streamState").textContent = "error";
   }

@@ -26,7 +26,12 @@ def _connect():
 
 @functions_framework.http
 def stream_batch(request):
-    n = random.randint(BATCH_MIN, BATCH_MAX)
+    # Optional {"count": N} overrides the random batch size (clamped 1..5000).
+    body = request.get_json(silent=True) or {}
+    if body.get("count"):
+        n = max(1, min(5000, int(body["count"])))
+    else:
+        n = random.randint(BATCH_MIN, BATCH_MAX)
     conn = _connect()
     try:
         with conn, conn.cursor() as cur:
