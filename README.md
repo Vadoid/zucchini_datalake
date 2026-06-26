@@ -140,8 +140,10 @@ gcloud datastream streams describe alloydb-to-iceberg \
 bq query --use_legacy_sql=false < sql/06_bigquery_validate.sql
 
 # quick row counts
+# append_log = raw CDC change log (one row per event + re-backfills), always >= AlloyDB.
+# current_state = deduped to latest row per PK, this is the number that matches AlloyDB.
 bq query --use_legacy_sql=false \
-  'SELECT (SELECT COUNT(*) FROM `alloydb_iceberg.public_store_sales`) AS replicated,
+  'SELECT (SELECT COUNT(*) FROM `alloydb_iceberg.public_store_sales`) AS append_log,
           (SELECT COUNT(*) FROM `common_layer.store_sales_current`)   AS current_state'
 
 # function logs
@@ -150,7 +152,8 @@ gcloud functions logs read datalake-streamer --region <region>
 
 The headline result is `common_layer.channel_revenue_by_category`: store revenue
 (AlloyDB → Iceberg) vs web revenue (native Iceberg) per category, net of returns. With
-streaming on, `replicated`/`current_state` climb in near-real-time (`data_freshness=0`).
+streaming on, `append_log`/`current_state` climb in near-real-time (`data_freshness=0`).
+Compare AlloyDB against `current_state` (deduped), not the raw `append_log`.
 
 ## Sync Control Panel (web UI)
 
