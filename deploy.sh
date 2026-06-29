@@ -10,6 +10,7 @@
 #                  PHASE A  terraform apply (everything, stream gated off)
 #                  DB INIT  schema + CDC publication/slot + seed (psql)
 #                  PHASE B  terraform apply (enable Datastream stream)
+#                  UI       deploy Sync Control Panel to Cloud Run
 #                  wait stream RUNNING, load bigquery_iceberg, build views, demo
 #   demo         views + live streaming demo only
 #   doctor       check required tools (terraform/gcloud/bq/psql/jq); print fixes
@@ -210,7 +211,8 @@ banner() {
   echo "  │  A) terraform apply (all infra, stream off)"
   echo "  │  B) DB schema + CDC + seed"
   echo "  │  C) terraform apply (enable Datastream)"
-  echo "  │  D) wait stream, load BigQuery Iceberg, build views, demo"
+  echo "  │  D) deploy Sync Control Panel UI (Cloud Run)"
+  echo "  │  E) wait stream, load BigQuery Iceberg, build views, demo"
   echo "  └───────────────────────────────────────────────────────────"
   echo
 }
@@ -222,6 +224,7 @@ summary() {
   TF output 2>/dev/null | sed 's/^/  /'
   echo
   echo "  datasets : alloydb_iceberg  bigquery_iceberg  common_layer"
+  bash "$SCRIPTS/ui.sh" url 2>/dev/null | sed 's/^/  /'
   echo "  control  : ./deploy.sh stream start|stop|once|status"
   echo "  validate : bq query --use_legacy_sql=false < sql/06_bigquery_validate.sql"
   echo "  teardown : ./destroy.sh"
@@ -368,6 +371,9 @@ case "$CMD" in
 
     say "PHASE B — enable Datastream stream (publication now exists)"
     apply_phase true
+
+    say "UI — deploy Sync Control Panel (Cloud Run)"
+    bash "$SCRIPTS/ui.sh" deploy || warn "UI deploy failed — continuing; retry later with ./deploy.sh ui deploy"
 
     wait_stream
     bq_load
