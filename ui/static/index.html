@@ -105,6 +105,23 @@
   input:checked + .slider::before { transform:translateX(20px); }
   input:disabled + .slider { opacity:.5; cursor:default; }
   .badge { font-size:11px; color:var(--warn); margin-left:6px; }
+  /* collapsible cards (details/summary) */
+  details.card > summary { list-style:none; cursor:pointer; display:flex; align-items:center; gap:12px; }
+  details.card > summary::-webkit-details-marker { display:none; }
+  details.card > summary .caret { color:var(--mut); font-size:12px; transition:transform .15s; }
+  details.card[open] > summary .caret { transform:rotate(90deg); }
+  details.card > summary strong { font-weight:600; }
+  details.card[open] > summary { margin-bottom:6px; }
+  details > summary.subhead { list-style:none; cursor:pointer; color:var(--mut); font-size:13px; }
+  details > summary.subhead::-webkit-details-marker { display:none; }
+  /* pipeline info table (identifiers) */
+  .kv { width:100%; }
+  .kv td { padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .kv td:first-child { color:var(--mut); width:140px; white-space:nowrap; }
+  .kv td:last-child { font-variant-numeric:tabular-nums; word-break:break-all; }
+  .slot { display:flex; align-items:center; gap:10px; font-size:13px; flex-wrap:wrap; }
+  .slot .nm { color:var(--fg); }
+  .slot .wal { color:var(--mut); font-variant-numeric:tabular-nums; }
   @media (max-width:560px) {
     thead { display:none; }
     table, tbody, tr, td { display:block; width:100%; }
@@ -125,14 +142,18 @@
 <main>
   <div id="healthBanner" class="banner" hidden></div>
 
-  <div class="card" id="revCard">
+  <div class="card" id="infoCard">
     <div class="row">
-      <strong class="grow">Channel revenue by category</strong>
-      <span class="muted">store = AlloyDB live · web = BigQuery Iceberg</span>
+      <strong class="grow">Pipeline</strong>
+      <span class="muted">repl. slot</span>
+      <span id="slotState" class="pill">…</span>
     </div>
-    <div class="row kpis" id="revKpis"></div>
-    <div class="bars" id="revBars"><div class="muted" style="padding:8px 0">loading…</div></div>
-    <div class="note">The POC's headline join (<code>common_layer.channel_revenue_by_category</code>): store revenue replicates live from AlloyDB and climbs as you burst; web is the static BigQuery Iceberg baseline, net of returns.</div>
+    <div id="slotInfo" class="row" style="margin-top:10px"><span class="muted">loading…</span></div>
+    <details style="margin-top:12px">
+      <summary class="subhead">Connection details</summary>
+      <table class="kv" style="margin-top:8px"><tbody id="infoRows"></tbody></table>
+    </details>
+    <div class="note">The logical replication slot retains WAL on AlloyDB until Datastream consumes it. If a slot reads <code>inactive</code> or its retained WAL keeps climbing, the stream has stalled and the AlloyDB disk is filling — restart the stream before the source runs out of space.</div>
   </div>
 
   <div class="card">
@@ -191,6 +212,17 @@
     <div class="row kpis" id="webKpis"></div>
     <div class="note">Loaded once into <code>bigquery_iceberg</code>, not replicated. <code>web_sales</code> and <code>web_returns</code> are the web channel that the revenue panel joins against the live AlloyDB store data.</div>
   </div>
+
+  <details class="card" id="revCard">
+    <summary>
+      <span class="caret">▶</span>
+      <strong class="grow">Channel revenue by category</strong>
+      <span class="muted">business view · store = AlloyDB live · web = BigQuery Iceberg</span>
+    </summary>
+    <div class="row kpis" id="revKpis"></div>
+    <div class="bars" id="revBars"><div class="muted" style="padding:8px 0">loading…</div></div>
+    <div class="note">The cross-source join (<code>common_layer.channel_revenue_by_category</code>): store revenue replicates live from AlloyDB and climbs as you burst; web is the static BigQuery Iceberg baseline, net of returns. Collapsed by default — this panel is the only non-operational view here.</div>
+  </details>
 </main>
 
 <script>
@@ -199,6 +231,13 @@ let busy = false;            // pause polling while a mutation is in flight
 const fmt = n => n == null ? "—" : Number(n).toLocaleString();
 const lag = s => s == null ? "—" : (s < 0 ? "0s" : s < 60 ? s + "s" : Math.floor(s/60) + "m " + (s%60) + "s");
 const money = n => n == null ? "—" : "$" + Number(n).toLocaleString(undefined, {maximumFractionDigits: 0});
+const bytes = n => {
+  if (n == null) return "—";
+  if (n < 1024) return n + " B";
+  const u = ["KB", "MB", "GB", "TB"]; let i = -1, v = n;
+  do { v /= 1024; i++; } while (v >= 1024 && i < u.length - 1);
+  return v.toFixed(v < 10 ? 1 : 0) + " " + u[i];
+};
 
 async function api(path, method = "GET", body) {
   const r = await fetch(path, {
@@ -288,7 +327,43 @@ function renderRevenue(rows) {
 }
 
 async function refreshRevenue() {
+  if (!$("#revCard").open) return;   // collapsed by default — skip the heavy BQ join
   try { renderRevenue((await api("/api/revenue")).rows); } catch (e) {}
+}
+$("#revCard").addEventListener("toggle", e => { if (e.target.open) refreshRevenue(); });
+
+// --- pipeline info: replication slot health + static identifiers -----------
+function renderSlots(slots) {
+  const el = $("#slotInfo"), st = $("#slotState");
+  if (!slots || !slots.length) {
+    el.innerHTML = '<span class="muted">no replication slots</span>';
+    pill(st, "NONE", []); return;
+  }
+  const allActive = slots.every(s => s.active);
+  pill(st, allActive ? "ACTIVE" : "INACTIVE", ["ACTIVE"]);
+  el.innerHTML = slots.map(s =>
+    `<span class="slot"><span class="nm"><code>${s.slot}</code></span>` +
+    `<span class="pill ${s.active ? "on" : "off"}">${s.active ? "active" : "inactive"}</span>` +
+    `<span class="wal">${bytes(s.retained_bytes)} WAL retained</span></span>`
+  ).join("");
+}
+
+let infoLoaded = false;
+async function loadInfo() {
+  if (infoLoaded) return;
+  try {
+    const i = await api("/api/info");
+    const rows = [
+      ["Project", i.project], ["Region", i.region],
+      ["Datastream", i.stream_id], ["Scheduler job", i.scheduler_job],
+      ["Publication", i.publication], ["BQ dataset", i.bq_dataset],
+      ["AlloyDB host", i.alloydb_host], ["AlloyDB db", `${i.alloydb_db} (user ${i.alloydb_user})`],
+      ["Function", i.function_uri],
+    ];
+    $("#infoRows").innerHTML = rows
+      .map(([k, v]) => `<tr><td>${k}</td><td><code>${v ?? "—"}</code></td></tr>`).join("");
+    infoLoaded = true;
+  } catch (e) {}
 }
 
 function renderWeb(src) {
@@ -384,6 +459,7 @@ async function refresh(force) {
     if (!$("#autoToggle").disabled) $("#autoToggle").checked = auto;
     $("#freshness").textContent = s.freshness_seconds == null ? "" : `fresh ${lag(s.freshness_seconds)}`;
     renderHealth(s);
+    renderSlots(s.slots);
     renderTables(s.tables);
     renderWeb(s.web_sources);
     const ss = (s.tables || []).find(t => t.name === "store_sales");
@@ -399,6 +475,7 @@ async function loop() {
   if (tick % 3 === 0) refreshRevenue();   // heavier BQ join — every ~9s
   tick++;
 }
+loadInfo();
 loop();
 refreshRevenue();
 setInterval(loop, 3000);

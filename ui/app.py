@@ -100,7 +100,21 @@ def alloydb_tables():
         for t in names:
             cur.execute(pgsql.SQL("SELECT count(*) FROM public.{}").format(pgsql.Identifier(t)))
             counts[t] = cur.fetchone()[0]
-    return names, published, counts, pks
+
+        # Logical replication slot health. A slot retains WAL on AlloyDB until
+        # Datastream consumes it; an inactive slot or ever-growing retained WAL
+        # means the stream stalled and the source disk is filling.
+        cur.execute(
+            "SELECT slot_name, active, "
+            "pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS retained_bytes "
+            "FROM pg_replication_slots ORDER BY slot_name"
+        )
+        slots = [
+            {"slot": r[0], "active": r[1],
+             "retained_bytes": int(r[2]) if r[2] is not None else None}
+            for r in cur.fetchall()
+        ]
+    return names, published, counts, pks, slots
 
 
 def publication_add(table):
@@ -256,7 +270,7 @@ class Toggle(BaseModel):
 
 @app.get("/api/status")
 def status():
-    names, published, counts, pks = alloydb_tables()
+    names, published, counts, pks, slots = alloydb_tables()
     included, stream_state = stream_status()
     health = stream_objects_health()
     tables, lags, errors = [], [], []
@@ -286,6 +300,25 @@ def status():
         "freshness_seconds": min(lags) if lags else None,  # newest event across tables
         "errors": errors,
         "web_sources": web_source_counts(),
+        "slots": slots,
+    }
+
+
+@app.get("/api/info")
+def info():
+    """Static pipeline topology / identifiers — the names an admin needs to find
+    each resource in the console or via gcloud. Fetched once on page load."""
+    return {
+        "project": PROJECT,
+        "region": REGION,
+        "stream_id": STREAM_ID,
+        "scheduler_job": SCHEDULER_JOB,
+        "publication": PUBLICATION,
+        "bq_dataset": BQ_DATASET,
+        "alloydb_host": DB_HOST,
+        "alloydb_db": DB_NAME,
+        "alloydb_user": DB_USER,
+        "function_uri": FUNCTION_URI,
     }
 
 
@@ -344,7 +377,7 @@ def cdc_mutate(body: Mutate):
 
 @app.post("/api/tables/{name}/sync")
 def sync(name: str, body: Toggle):
-    names, _, _, _ = alloydb_tables()
+    names, _, _, _, _ = alloydb_tables()
     set_synced(name, body.on, set(names))
     return {"name": name, "synced": body.on}
 
