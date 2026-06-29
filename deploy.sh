@@ -213,7 +213,7 @@ banner() {
   echo "  │  B) DB schema + CDC + seed"
   echo "  │  C) terraform apply (enable Datastream)"
   echo "  │  D) deploy Sync Control Panel UI (Cloud Run)"
-  echo "  │  E) wait stream, load BigQuery Iceberg, build views"
+  echo "  │  E) wait stream, load BigQuery Iceberg, build views, start streaming"
   echo "  └───────────────────────────────────────────────────────────"
   echo
 }
@@ -381,7 +381,10 @@ case "$CMD" in
 
     say "build common_layer views (dedup-to-current + cross-source join)"
     bq --project_id="$PROJECT" query --use_legacy_sql=false < "$SQL_DIR/05_common_layer_views.sql"
-    # Streaming start/stop + live stats are driven from the Sync Control Panel UI.
+
+    say "START streaming (resume scheduler) — UI controls it afterward"
+    bash "$SCRIPTS/stream.sh" start
+    # Live stats + start/stop are driven from the Sync Control Panel UI.
     # For a terminal-only watch loop, run: ./deploy.sh demo
 
     summary
