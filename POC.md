@@ -21,7 +21,7 @@ streams new rows.
 Cloud Scheduler (datalake-stream-tick, * * * * *)
   → Cloud Function (datalake-streamer, inserts 20-60 store_sales rows)
     → AlloyDB tpcds.store_sales            (private IP via VPC connector)
-      → Datastream (alloydb_to_iceberg, logical repl: datalake_pub/datalake_slot, PSC)
+      → Datastream (alloydb-to-iceberg, logical repl: datalake_pub/datalake_slot, PSC)
         → BigQuery managed Iceberg  alloydb_iceberg.public_*  (append-only + datastream_metadata)
 one-off DML load → bigquery_iceberg.web_sales / web_returns (static, 5000/500 rows)
 common_layer views: *_current (dedup) + sales_unified + channel_revenue_by_category
@@ -48,8 +48,14 @@ Three datasets, three roles:
 2. **PHASE A** - `terraform apply -var=enable_stream=false`. All infrastructure, stream gated off.
 3. **DB INIT** (psql) - `sql/01_alloydb_schema`, then `sql/03_alloydb_cdc_setup` (publication `datalake_pub`, slot `datalake_slot`), then `sql/02_alloydb_seed` (365 dates, 200 customers, 100 items, 10 stores, ~2000 sales).
 4. **PHASE B** - `terraform apply -var=enable_stream=true`. Creates the stream; backfill begins.
-5. **LOAD** (bq) - `sql/04_bigquery_iceberg_load`: 5000 `web_sales` + 500 `web_returns`.
-6. **VIEWS + DEMO** - `sql/05_common_layer_views`, then `scripts/05_views_demo.sh` (resume scheduler, watch loop, pause).
+5. **UI** - build and deploy the Sync Control Panel to Cloud Run (`scripts/ui.sh`).
+6. **LOAD** (bq) - `sql/04_bigquery_iceberg_load`: 5000 `web_sales` + 500 `web_returns`.
+7. **VIEWS** - `sql/05_common_layer_views` builds the `common_layer` views.
+8. **STREAM ON** - resume the scheduler so the Cloud Function starts firing; the UI drives it from here.
+
+The old terminal watch loop (`scripts/05_views_demo.sh`) is no longer part of the
+main run. Use it standalone with `./deploy.sh demo` if you want the CLI to print
+snapshots on a timer instead of watching in the UI.
 
 Commands:
 
@@ -154,7 +160,8 @@ Re-run **Step 1** and **Step 6** every ~90s. You'll see `store_sales` raw count 
 ```
 
 `./deploy.sh stream once` fires a single batch; `./deploy.sh stream status`
-checks scheduler state.
+checks scheduler state. The Sync Control Panel shows the same counts and lag
+climbing live if you'd rather watch there than re-run the queries.
 
 ## 5. Appendix: Reference SQL
 

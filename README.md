@@ -87,15 +87,16 @@ Key design points:
 }
 ```
 
-Only `project_id` is required. Leave the password as the placeholder and it is
+Only `project_id` is required. Leave the password as the placeholder and it gets
 auto-generated and written back. `deploy.sh` renders `terraform.auto.tfvars.json` from
 this, so plain `terraform` works too. Any key can be overridden per-run with a flag
-(`--project`, `--region`, `--password`, …) or `TF_VAR_*`.
+(`--project`, `--region`, `--password`, and so on) or `TF_VAR_*`. `demo_iters` and
+`demo_gap` only matter for the optional `./deploy.sh demo` watch loop.
 
 ## Deploy
 
 ```bash
-./deploy.sh                 # full run, interactive (banner confirm + demo prompt)
+./deploy.sh                 # full run, interactive (one banner confirm)
 ./deploy.sh --yes           # full run, no prompts (CI / autonomous)
 ```
 
@@ -107,9 +108,14 @@ this, so plain `terraform` works too. Any key can be overridden per-run with a f
 | PHASE A   | `terraform apply`, all infra, Datastream stream off |
 | DB INIT   | create db + schema + CDC publication/slot + seed (psql) |
 | PHASE B   | `terraform apply -var=enable_stream=true`, turn the stream on |
+| UI        | build + deploy the Sync Control Panel to Cloud Run |
 | backfill  | wait for stream RUNNING + Iceberg tables to populate |
 | load      | one-off DML into `bigquery_iceberg` |
-| views+demo| build `common_layer` views, run the live streaming demo |
+| views     | build the `common_layer` views |
+| stream on | resume the scheduler so data starts flowing (UI takes over after) |
+
+By the time it finishes the pipeline is live and streaming, with the UI already
+up to drive it. For a terminal-only watch loop instead, run `./deploy.sh demo`.
 
 Other commands:
 
@@ -157,35 +163,37 @@ Compare AlloyDB against `current_state` (deduped), not the raw `append_log`.
 
 ## Sync Control Panel (web UI)
 
-A responsive Cloud Run web UI to drive the pipeline without the CLI:
+A Cloud Run web UI for driving the pipeline without the CLI. `./deploy.sh` already
+deploys it as part of a full run; the commands below are for redeploying or removing
+it on its own. What it gives you:
 
-- **Per-table sync toggles**, flip each AlloyDB table's replication on/off. Turning
-  a table on adds it to the publication + the Datastream stream; Datastream backfills
+- Per-table sync toggles. Flip each AlloyDB table's replication on or off. Turning a
+  table on adds it to the publication and the Datastream stream; Datastream backfills
   and auto-creates `alloydb_iceberg.public_<table>`.
-- **Switch on new tables**, any new `public` table appears in the list automatically;
-  toggle it on to start feeding BigQuery Iceberg (no redeploy).
-- **Live stats**, per-table AlloyDB row count, BQ Iceberg row count, replication lag,
-  plus stream + scheduler state (polled every 3s).
-- **Data burst**, "Burst now" fires one mini-batch of `store_sales` rows; the
-  auto-burst toggle starts/stops the every-minute scheduler.
+- New tables show up on their own. Any new `public` table appears in the list, so you
+  toggle it on to start feeding BigQuery Iceberg without a redeploy.
+- Live stats, polled every 3s: per-table AlloyDB row count, BQ Iceberg row count,
+  replication lag, and the stream + scheduler state.
+- Data burst. "Burst now" fires one mini-batch of `store_sales` rows; the auto-burst
+  toggle starts and stops the every-minute scheduler.
 
 ```bash
-./deploy.sh ui            # build + deploy to Cloud Run, prints the URL (~2-3 min first time)
+./deploy.sh ui            # rebuild + redeploy to Cloud Run, prints the URL (~2-3 min first time)
 ./deploy.sh ui url        # print the URL again
 ./deploy.sh ui delete     # remove the Cloud Run service
 ```
 
-Requires the pipeline already deployed (`./deploy.sh`). The UI's runtime SA + IAM
-live in `terraform/ui.tf` and are created during a normal apply. The stream's
-`include_objects` is `lifecycle.ignore_changes`, so live toggles survive the next
-`terraform apply` (a full `./deploy.sh` re-run resets the publication to its 5-table
-seed via `sql/03`).
+The UI's runtime SA and IAM live in `terraform/ui.tf` and get created during a normal
+apply. The stream's `include_objects` is `lifecycle.ignore_changes`, so live toggles
+survive the next `terraform apply` (a full `./deploy.sh` re-run resets the publication
+to its 5-table seed via `sql/03`).
 
-> **Access:** the altostrat org enforces `iam.allowedPolicyMemberDomains`, which
-> rejects a public `allUsers` binding, so the service is **IAM-gated**. `deploy.sh ui`
-> grants the deploying user `run.invoker` and prints a proxy command; open the panel
-> locally with `gcloud run services proxy datalake-ui --region <region>` then browse
-> `http://localhost:8080`. To share it, grant other users `run.invoker` on the service.
+> **Access:** the altostrat org enforces `iam.allowedPolicyMemberDomains`, so a public
+> `allUsers` binding only works once you've set a project-level override allowing it
+> (this project has one). When the binding succeeds the printed URL is public; if the
+> org still blocks it, the service stays IAM-gated and `deploy.sh` grants the deploying
+> user `run.invoker` instead. In that case open it locally with
+> `gcloud run services proxy datalake-ui --region <region>` and browse `http://localhost:8080`.
 
 ## Teardown
 
@@ -202,7 +210,7 @@ buckets are `force_destroy`, so the Iceberg Parquet data is removed with them.
 ## Layout
 
 ```
-deploy.sh / destroy.sh   lifecycle entrypoints (config.json -> tfvars -> apply -> SQL -> demo)
+deploy.sh / destroy.sh   lifecycle entrypoints (config.json -> tfvars -> apply -> SQL -> UI)
 config.json              single source of truth (gitignored; copy from config.example.json)
 terraform/               all infra (AlloyDB, VPC+PSC, Datastream, BigQuery, GCS, function, scheduler)
 function/                gen2 Cloud Function, mini-batch streamer (psycopg2)
