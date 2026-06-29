@@ -6,12 +6,14 @@
 #   ./deploy.sh [options] [command]
 #
 # Commands (default: all):
-#   all          full provision in one apply, then DB init + Datastream + load + demo:
+#   all          full provision in one apply, then DB init + Datastream + load:
 #                  PHASE A  terraform apply (everything, stream gated off)
 #                  DB INIT  schema + CDC publication/slot + seed (psql)
 #                  PHASE B  terraform apply (enable Datastream stream)
 #                  UI       deploy Sync Control Panel to Cloud Run
-#                  wait stream RUNNING, load bigquery_iceberg, build views, demo
+#                  wait stream RUNNING, load bigquery_iceberg, build views
+#                (drive streaming + watch live stats from the UI; the CLI
+#                 watch loop now lives only in `./deploy.sh demo`)
 #   demo         views + live streaming demo only
 #   doctor       check required tools (terraform/gcloud/bq/psql/jq); print fixes
 #   stream X     control streaming: X = start|stop|once|status
@@ -206,13 +208,12 @@ banner() {
   printf  "  │  region    : %s   zone: %s\n" "$REGION" "$ZONE"
   printf  "  │  psql CIDR : %s\n" "${AUTH_CIDR:-<public IP disabled>}"
   printf  "  │  create    : %s\n" "$CREATE_PROJECT"
-  printf  "  │  demo      : %s rounds, %ss apart\n" "$ITERS" "$GAP"
   echo "  ├───────────────────────────────────────────────────────────"
   echo "  │  A) terraform apply (all infra, stream off)"
   echo "  │  B) DB schema + CDC + seed"
   echo "  │  C) terraform apply (enable Datastream)"
   echo "  │  D) deploy Sync Control Panel UI (Cloud Run)"
-  echo "  │  E) wait stream, load BigQuery Iceberg, build views, demo"
+  echo "  │  E) wait stream, load BigQuery Iceberg, build views"
   echo "  └───────────────────────────────────────────────────────────"
   echo
 }
@@ -378,12 +379,10 @@ case "$CMD" in
     wait_stream
     bq_load
 
-    if confirm "Run the live streaming demo now ($ITERS rounds, ${GAP}s apart)?"; then
-      bash "$SCRIPTS/05_views_demo.sh" "$ITERS" "$GAP"
-    else
-      say "skipping demo — building views only"
-      bq --project_id="$PROJECT" query --use_legacy_sql=false < "$SQL_DIR/05_common_layer_views.sql"
-    fi
+    say "build common_layer views (dedup-to-current + cross-source join)"
+    bq --project_id="$PROJECT" query --use_legacy_sql=false < "$SQL_DIR/05_common_layer_views.sql"
+    # Streaming start/stop + live stats are driven from the Sync Control Panel UI.
+    # For a terminal-only watch loop, run: ./deploy.sh demo
 
     summary
     ;;
