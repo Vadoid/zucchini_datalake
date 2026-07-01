@@ -4,8 +4,7 @@
 
 -- ---- dimensions ----------------------------------------------------------
 CREATE TABLE IF NOT EXISTS date_dim (
-  d_date_sk   integer PRIMARY KEY,
-  d_date      date    NOT NULL,
+  d_date      date    PRIMARY KEY,
   d_year      integer NOT NULL,
   d_moy       integer NOT NULL,   -- month of year
   d_dom       integer NOT NULL    -- day of month
@@ -39,7 +38,7 @@ CREATE TABLE IF NOT EXISTS store_sales (
   ss_ticket_number bigint  NOT NULL,
   ss_item_sk       integer NOT NULL REFERENCES item(i_item_sk),
   ss_customer_sk   integer REFERENCES customer(c_customer_sk),
-  ss_sold_date_sk  integer REFERENCES date_dim(d_date_sk),
+  ss_sold_date     date    REFERENCES date_dim(d_date),
   ss_store_sk      integer REFERENCES store(s_store_sk),
   ss_quantity      integer,
   ss_sales_price   numeric(7,2),
@@ -47,4 +46,4 @@ CREATE TABLE IF NOT EXISTS store_sales (
 );
 
 CREATE INDEX IF NOT EXISTS ix_ss_item ON store_sales(ss_item_sk);
-CREATE INDEX IF NOT EXISTS ix_ss_date ON store_sales(ss_sold_date_sk);
+CREATE INDEX IF NOT EXISTS ix_ss_date ON store_sales(ss_sold_date);

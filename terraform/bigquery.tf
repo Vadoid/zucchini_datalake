@@ -61,7 +61,7 @@ resource "google_bigquery_table" "web_sales" {
   schema = jsonencode([
     { name = "ws_order_number", type = "INTEGER", mode = "REQUIRED" },
     { name = "ws_item_sk", type = "INTEGER", mode = "REQUIRED" },
-    { name = "ws_sold_date_sk", type = "INTEGER", mode = "NULLABLE" },
+    { name = "ws_sold_date", type = "DATE", mode = "NULLABLE" },
     { name = "ws_bill_customer_sk", type = "INTEGER", mode = "NULLABLE" },
     { name = "ws_quantity", type = "INTEGER", mode = "NULLABLE" },
     { name = "ws_sales_price", type = "NUMERIC", mode = "NULLABLE" },
@@ -88,7 +88,7 @@ resource "google_bigquery_table" "web_returns" {
   schema = jsonencode([
     { name = "wr_order_number", type = "INTEGER", mode = "REQUIRED" },
     { name = "wr_item_sk", type = "INTEGER", mode = "REQUIRED" },
-    { name = "wr_returned_date_sk", type = "INTEGER", mode = "NULLABLE" },
+    { name = "wr_returned_date", type = "DATE", mode = "NULLABLE" },
     { name = "wr_return_quantity", type = "INTEGER", mode = "NULLABLE" },
     { name = "wr_return_amt", type = "NUMERIC", mode = "NULLABLE" },
   ])

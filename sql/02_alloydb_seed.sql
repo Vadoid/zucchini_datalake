@@ -1,14 +1,16 @@
 -- Tiny seed data for the AlloyDB TPC-DS subset.
 -- psql "host=<ip> dbname=tpcds user=postgres" -f 02_alloydb_seed.sql
 
--- date_dim: all days of 2025 (sk = 2025NNN ordinal).
-INSERT INTO date_dim (d_date_sk, d_date, d_year, d_moy, d_dom)
-SELECT 20250000 + g,
-       (DATE '2025-01-01' + (g - 1)),
-       EXTRACT(YEAR  FROM DATE '2025-01-01' + (g - 1))::int,
-       EXTRACT(MONTH FROM DATE '2025-01-01' + (g - 1))::int,
-       EXTRACT(DAY   FROM DATE '2025-01-01' + (g - 1))::int
-FROM generate_series(1, 365) AS g
+-- date_dim: all days of 2025.
+INSERT INTO date_dim (d_date, d_year, d_moy, d_dom)
+SELECT dt,
+       EXTRACT(YEAR  FROM dt)::int,
+       EXTRACT(MONTH FROM dt)::int,
+       EXTRACT(DAY   FROM dt)::int
+FROM (
+  SELECT (DATE '2025-01-01' + (g - 1)) AS dt
+  FROM generate_series(1, 365) AS g
+) q
 ON CONFLICT DO NOTHING;
 
 -- customer: 200 rows.
@@ -41,17 +43,20 @@ ON CONFLICT DO NOTHING;
 
 -- store_sales: ~2000 initial fact rows (the Cloud Function appends more later).
 INSERT INTO store_sales
-  (ss_ticket_number, ss_item_sk, ss_customer_sk, ss_sold_date_sk, ss_store_sk,
+  (ss_ticket_number, ss_item_sk, ss_customer_sk, ss_sold_date, ss_store_sk,
    ss_quantity, ss_sales_price, ss_net_paid)
 SELECT g,
        1 + (random() * 99)::int,
        1 + (random() * 199)::int,
-       20250000 + 1 + (random() * 364)::int,
+       d.dt,
        1 + (random() * 9)::int,
        q.qty,
        q.price,
        round((q.qty * q.price)::numeric, 2)
 FROM generate_series(1, 2000) AS g
+CROSS JOIN LATERAL (
+  SELECT (DATE '2025-01-01' + floor(random() * 365)::int) AS dt
+) AS d
 CROSS JOIN LATERAL (
   SELECT (1 + (random() * 9)::int) AS qty,
          round((1 + random() * 249)::numeric, 2) AS price

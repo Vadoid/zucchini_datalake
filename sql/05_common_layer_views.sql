@@ -44,7 +44,7 @@ CREATE OR REPLACE VIEW `common_layer.date_dim_current` AS
 SELECT * EXCEPT (datastream_metadata, _rn)
 FROM (
   SELECT *, ROW_NUMBER() OVER (
-    PARTITION BY d_date_sk ORDER BY datastream_metadata.source_timestamp DESC) AS _rn
+    PARTITION BY d_date ORDER BY datastream_metadata.source_timestamp DESC) AS _rn
   FROM `alloydb_iceberg.public_date_dim`
 )
 WHERE _rn = 1 AND datastream_metadata.change_type != 'DELETE';
@@ -64,12 +64,12 @@ WHERE _rn = 1 AND datastream_metadata.change_type != 'DELETE';
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW `common_layer.sales_unified` AS
 WITH store_ch AS (
-  SELECT 'store' AS channel, ss.ss_item_sk AS item_sk, ss.ss_sold_date_sk AS date_sk,
+  SELECT 'store' AS channel, ss.ss_item_sk AS item_sk, ss.ss_sold_date AS sale_date,
          ss.ss_quantity AS quantity, ss.ss_net_paid AS net_paid
   FROM `common_layer.store_sales_current` ss
 ),
 web_ch AS (
-  SELECT 'web' AS channel, ws.ws_item_sk AS item_sk, ws.ws_sold_date_sk AS date_sk,
+  SELECT 'web' AS channel, ws.ws_item_sk AS item_sk, ws.ws_sold_date AS sale_date,
          ws.ws_quantity AS quantity, ws.ws_net_paid AS net_paid
   FROM `bigquery_iceberg.web_sales` ws
 ),
@@ -81,13 +81,14 @@ SELECT
   s.item_sk,
   i.i_category,
   i.i_brand,
+  s.sale_date,
   d.d_year,
   d.d_moy,
   s.quantity,
   s.net_paid
 FROM all_sales s
 LEFT JOIN `common_layer.item_current`     i ON s.item_sk = i.i_item_sk
-LEFT JOIN `common_layer.date_dim_current` d ON s.date_sk = d.d_date_sk;
+LEFT JOIN `common_layer.date_dim_current` d ON s.sale_date = d.d_date;
 
 -- ---------------------------------------------------------------------------
 -- Channel revenue comparison by category (the headline join result).

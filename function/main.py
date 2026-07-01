@@ -40,8 +40,8 @@ def stream_batch(request):
             cust_lo, cust_hi = cur.fetchone()
             cur.execute("SELECT min(i_item_sk), max(i_item_sk) FROM item")
             item_lo, item_hi = cur.fetchone()
-            cur.execute("SELECT min(d_date_sk), max(d_date_sk) FROM date_dim")
-            date_lo, date_hi = cur.fetchone()
+            cur.execute("SELECT d_date FROM date_dim")
+            dates = [r[0] for r in cur.fetchall()]
             cur.execute("SELECT min(s_store_sk), max(s_store_sk) FROM store")
             store_lo, store_hi = cur.fetchone()
             cur.execute("SELECT COALESCE(max(ss_ticket_number), 0) FROM store_sales")
@@ -56,7 +56,7 @@ def stream_batch(request):
                     ticket,
                     random.randint(item_lo, item_hi),
                     random.randint(cust_lo, cust_hi),
-                    random.randint(date_lo, date_hi),
+                    random.choice(dates),
                     random.randint(store_lo, store_hi),
                     qty,
                     price,
@@ -66,7 +66,7 @@ def stream_batch(request):
             cur.executemany(
                 """
                 INSERT INTO store_sales
-                  (ss_ticket_number, ss_item_sk, ss_customer_sk, ss_sold_date_sk,
+                  (ss_ticket_number, ss_item_sk, ss_customer_sk, ss_sold_date,
                    ss_store_sk, ss_quantity, ss_sales_price, ss_net_paid)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
